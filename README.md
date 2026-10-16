@@ -149,7 +149,10 @@ DATABASE_URL=postgresql+psycopg://... uv run alembic check
 The suite contains unit, supplier-contract, workflow, and local end-to-end tests. It covers exact
 and conflicting acknowledgments, duplicate external calls, partial suppliers, all-supplier
 failure, stale approvals, FX fallback, controlled recovery, and PostgreSQL checkpoint resumption.
-CI repeats formatting, linting, strict domain/protocol typing, tests, migrations, and drift checks.
+The Fetch connectivity integration test additionally drives a demand-card reply through registered
+Orchestrator and Inventory uAgent protocol handlers, verifies wire serialization/correlation, and
+asserts the returned assessment card against protected inventory. CI repeats formatting, linting,
+strict agent/domain/persistence/protocol/service typing, tests, migrations, and drift checks.
 
 ## Supplier API and demo scenarios
 
@@ -175,7 +178,10 @@ Admin routes return 404 in production mode.
 
 The Orchestrator publishes the official Agent Chat Protocol manifest and emits Interactive Card
 metadata with a text fallback. Card payloads are strict, versioned, and limited to 64 KB. Current
-local card builders cover intake, plans, approval, exceptions, completion, and agent activity.
+local card builders cover intake, plans, approval, exceptions, completion, and agent activity. The
+implemented connectivity slice accepts the structured demand-card reply, persists its workflow and
+demand, exchanges a typed request/result with the Inventory Agent, and returns the correlated
+inventory card. Sourcing and later stages are not yet connected to the live chat transport.
 
 Live deployment checklist:
 
@@ -228,3 +234,4 @@ supplier master-data governance, encryption/key rotation, and deployment-specifi
 - [ADR 0001: current Fetch.ai chat/card APIs](docs/adr/0001-fetch-agent-chat-protocol.md)
 - [ADR 0002: LangGraph PostgreSQL checkpoint ownership](docs/adr/0002-langgraph-postgres-checkpoints.md)
 - [ADR 0003: Frankfurter v2 FX provider](docs/adr/0003-frankfurter-fx.md)
+- [ADR 0004: uAgents wire boundary for Pydantic 2 contracts](docs/adr/0004-uagents-pydantic-wire-boundary.md)

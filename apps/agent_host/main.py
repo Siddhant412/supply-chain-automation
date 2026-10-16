@@ -25,7 +25,9 @@ def main() -> None:
         raise RuntimeError("all five company agent seeds are required to start the Agentverse host")
     values = [value.get_secret_value() for value in configured if value is not None]
     agents = build_company_agents(
-        AgentSeeds(*values), publish_agent_details=settings.publish_agent_details
+        AgentSeeds(*values),
+        publish_agent_details=settings.publish_agent_details,
+        mailbox=settings.agent_mailbox,
     )
     Bureau(agents=list(agents), port=settings.agent_host_port, network="testnet").run()
 

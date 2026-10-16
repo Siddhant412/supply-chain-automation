@@ -1,6 +1,9 @@
-from uagents_core.contrib.protocols.chat import chat_protocol_spec
+from uagents import Model
+from uagents_core.contrib.protocols.chat import ChatMessage, chat_protocol_spec
 
+from supplymesh.agents.factory import AgentSeeds, build_company_agents
 from supplymesh.agents.orchestrator import build_chat_protocol, build_orchestrator_agent
+from supplymesh.agents.transport import DemandPlanningTransport, InventoryShortageTransport
 
 
 def test_official_chat_protocol_version_and_manifest() -> None:
@@ -17,3 +20,26 @@ def test_orchestrator_requires_a_stable_seed() -> None:
         assert "ORCHESTRATOR_AGENT_SEED" in str(exc)
     else:
         raise AssertionError("empty seed must be rejected")
+
+
+def test_company_agents_publish_the_connectivity_slice_protocols() -> None:
+    agents = build_company_agents(
+        AgentSeeds(
+            orchestrator="test-orchestrator-connectivity-seed",
+            inventory="test-inventory-connectivity-seed",
+            sourcing="test-sourcing-connectivity-seed",
+            procurement="test-procurement-connectivity-seed",
+            acknowledgment="test-acknowledgment-connectivity-seed",
+        ),
+        publish_manifests=False,
+    )
+    orchestrator, inventory, *_ = agents
+    assert orchestrator.get_message_protocol(Model.build_schema_digest(ChatMessage)) is not None
+    assert (
+        orchestrator.get_message_protocol(Model.build_schema_digest(InventoryShortageTransport))
+        is not None
+    )
+    assert (
+        inventory.get_message_protocol(Model.build_schema_digest(DemandPlanningTransport))
+        is not None
+    )

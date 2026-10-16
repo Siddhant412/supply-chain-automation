@@ -8,7 +8,7 @@ means the cited automated test or reproducible command passed; unchecked items a
 ## Executed locally
 
 - [x] Ruff formatting and linting: `uv run ruff format --check . && uv run ruff check .`
-- [x] Strict typing for domain/protocol/services: `uv run mypy`
+- [x] Strict typing for agent/domain/persistence/protocol/service packages: `uv run mypy`
 - [x] Automated suite: `uv run pytest -q`
 - [x] Deterministic domain/service/EDI coverage: 94% (`pytest-cov`).
 - [x] PostgreSQL migrations `0001`–`0005` apply to a clean PostgreSQL 17 database.
@@ -16,6 +16,8 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [x] PostgreSQL checkpoint restart: pause, close graph/saver, reopen/resume twice, complete.
 - [x] PostgreSQL side-effect journal: pending and success survive independent sessions.
 - [x] Five unique stable uAgent addresses derive from five distinct runtime-only seeds.
+- [x] Demand card submission traverses registered Orchestrator and Inventory uAgent protocol
+  handlers, persists the demand/workflow before dispatch, and returns a correlated assessment card.
 - [ ] Docker Compose service startup (configuration validates; Docker daemon was unavailable).
 
 ## Functional
@@ -40,8 +42,12 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [x] Agent Chat Protocol 0.3.0 manifest and card metadata build against installed official models.
 - [x] Typed versioned specialist request/result models and in-process service adapters are covered.
 - [x] Intake, plan, approval, exception, completion, and activity card payloads exist and validate.
+- [x] The Fetch.ai connectivity vertical slice sends a Pydantic-2-validated planning contract over
+  uAgents wire models, protects existing reservations, rejects envelope tampering, and deduplicates
+  repeated demand-card message IDs.
 - [ ] Orchestrator ACP handler drives the complete LangGraph workflow; the current handler proves
-  the official chat manifest and intake-card surface, while local e2e tests invoke domain adapters.
+  the official chat manifest plus the persisted inventory slice, while later workflow stages still
+  use direct domain adapters in local e2e tests.
 - [ ] Orchestrator and all specialists exchange the typed contracts over uAgents transport; five
   stable identities exist, but specialist transport handlers are not yet wired.
 - [ ] All five agents registered with stable Agentverse profile URLs.
@@ -51,8 +57,10 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [ ] Complete primary workflow demonstrated in one ASI:One conversation.
 - [ ] Shared ASI:One conversation URL available.
 
-Blocker: the unchecked items require Agentverse/ASI:One credentials, deployed HTTPS endpoints, and
-human interaction in those products. No credentials or URLs were present in the workspace.
+Implementation gap: sourcing, procurement, acknowledgment, and exception contracts are not yet
+wired through uAgents transport or the ACP conversation loop. External blocker: live Agentverse and
+ASI:One checks require credentials, deployed HTTPS endpoints, and human interaction in those
+products. No credentials or URLs were present in the workspace.
 
 ## Reliability and submission
 

@@ -54,11 +54,27 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["supplymesh.protocols", "supplymesh.domain", "supplymesh.services"]
+packages = [
+  "supplymesh.agents",
+  "supplymesh.domain",
+  "supplymesh.persistence",
+  "supplymesh.protocols",
+  "supplymesh.services",
+]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["ortools.*"]
 follow_imports = "skip"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["uagents.*", "uagents_core.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["supplymesh.agents.*"]
+disallow_subclassing_any = false
+disallow_untyped_decorators = false
 
