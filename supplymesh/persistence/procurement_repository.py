@@ -99,6 +99,7 @@ class ProcurementRepository:
                     idempotency_key=key,
                 )
             )
+            session.flush()
             session.add_all(
                 PurchaseOrderLineRecord(
                     po_id=po.po_id,
@@ -478,6 +479,7 @@ class ProcurementRepository:
                     status=comparison.status,
                 )
             )
+            session.flush()
             session.add_all(
                 AcknowledgmentLineRecord(
                     id=uuid5(acknowledgment_id, f"line:{line.line_number}"),

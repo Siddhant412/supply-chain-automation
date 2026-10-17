@@ -20,13 +20,17 @@ def purchase_orders_from_plan(
             by_supplier[supplier_id],
             key=lambda item: (item.component_sku, item.quote_ref),
         )
+        # Our supported 850 subset carries one requested date at PO level. Use the
+        # latest allocation date so every line is representable without promising
+        # any component earlier than the selected sourcing plan can deliver it.
+        requested_date = max(allocation.promised_date for allocation in allocations)
         lines = tuple(
             PurchaseOrderLine(
                 line_number=index,
                 component_sku=allocation.component_sku,
                 quantity=Decimal(allocation.quantity),
                 unit_price=Decimal(allocation.unit_price_minor) / 100,
-                requested_date=allocation.promised_date,
+                requested_date=requested_date,
             )
             for index, allocation in enumerate(allocations, start=1)
         )

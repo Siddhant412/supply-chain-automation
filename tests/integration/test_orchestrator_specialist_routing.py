@@ -164,10 +164,10 @@ async def test_orchestrator_routes_all_specialists_and_completes_exact_ack() -> 
             ShortageLine(
                 component_sku="ENGINE-001",
                 unit="EA",
-                gross_required=Decimal("75"),
+                gross_required=Decimal("75.5"),
                 available_to_promise=Decimal("20"),
                 tentative_reservation=Decimal("20"),
-                shortage=Decimal("55"),
+                shortage=Decimal("55.5"),
                 evidence=("protected existing reservations",),
             ),
         ),
@@ -194,7 +194,7 @@ async def test_orchestrator_routes_all_specialists_and_completes_exact_ack() -> 
         if isinstance(message, SourcingRequestTransport)
     )
     sourcing_request = sourcing_wire.to_domain()
-    assert sourcing_request.shortages == {"ENGINE-001": 55}
+    assert sourcing_request.shortages == {"ENGINE-001": 56}
 
     quotes = SupplierQuotesCollected(
         correlation_id=correlation_id,
@@ -219,12 +219,12 @@ async def test_orchestrator_routes_all_specialists_and_completes_exact_ack() -> 
                             component_sku="ENGINE-001",
                             supplier_id="supplier-alpha",
                             quote_ref="quote-alpha",
-                            quantity=55,
+                            quantity=56,
                             unit_price_minor=1000,
                             promised_date=date(2026, 11, 20),
                         ),
                     ),
-                    total_cost_minor=55_000,
+                    total_cost_minor=56_000,
                     currency="USD",
                     latest_arrival=date(2026, 11, 20),
                     total_late_days=0,
@@ -314,16 +314,19 @@ async def test_orchestrator_routes_all_specialists_and_completes_exact_ack() -> 
         "agent1procurement",
         AcknowledgmentReceivedTransport.from_domain(acknowledgment),
     )
-    assert any(
-        destination == "agent1ack" and isinstance(message, AcknowledgmentReceivedTransport)
+    forwarded_ack = next(
+        message.to_domain()
         for destination, message in procurement_context.sent
+        if destination == "agent1ack" and isinstance(message, AcknowledgmentReceivedTransport)
     )
+    assert forwarded_ack.message_id != acknowledgment.message_id
+    assert forwarded_ack.reply_to == str(acknowledgment.message_id)
 
     comparison = AcknowledgmentComparisonResult(
         correlation_id=correlation_id,
         workflow_id=workflow_id,
         sender_agent="acknowledgment-and-exception",
-        reply_to=str(acknowledgment.message_id),
+        reply_to=str(forwarded_ack.message_id),
         po_id=str(po.po_id),
         po_version=po.version,
         comparison=AcknowledgmentComparison(
@@ -505,15 +508,18 @@ async def test_conflict_counterproposal_routes_860_and_865_back_to_completion() 
         "agent1procurement",
         ChangeResponseReceivedTransport.from_domain(response),
     )
-    assert any(
-        destination == "agent1ack" and isinstance(message, ChangeResponseReceivedTransport)
+    forwarded_response = next(
+        message.to_domain()
         for destination, message in context.sent
+        if destination == "agent1ack" and isinstance(message, ChangeResponseReceivedTransport)
     )
+    assert forwarded_response.message_id != response.message_id
+    assert forwarded_response.reply_to == str(response.message_id)
     status = WorkflowStatusResponse(
         correlation_id=correlation_id,
         workflow_id=workflow_id,
         sender_agent="acknowledgment-and-exception",
-        reply_to=str(response.message_id),
+        reply_to=str(forwarded_response.message_id),
         status="CHANGE_ACCEPTED",
         checkpoint_version=2,
         summary={"accepted": True},

@@ -3,7 +3,7 @@
   "balances": [
     {"component_sku": "ENGINE-001", "on_hand": "130", "safety_stock": "10"},
     {"component_sku": "FRAME-001", "on_hand": "115", "safety_stock": "8"},
-    {"component_sku": "BATTERY-001", "on_hand": "150", "safety_stock": "10"},
+    {"component_sku": "BATTERY-001", "on_hand": "190", "safety_stock": "10"},
     {"component_sku": "WHEEL-FRONT-001", "on_hand": "190", "safety_stock": "10"},
     {"component_sku": "WHEEL-REAR-001", "on_hand": "190", "safety_stock": "10"},
     {"component_sku": "BRAKE-KIT-001", "on_hand": "125", "safety_stock": "10"},

@@ -58,6 +58,8 @@ Each identity requires its own environment-only seed. The host rejects missing o
 6. Pause for plan approval, then pause separately before sending purchase orders.
 7. Persist the approved PO, raw X12 850, supplier-transaction intent, and outbound agent message
    before sending; journal every idempotent external side effect before and after the call.
+   The supported 850 subset carries one requested date per supplier PO, so multi-line POs use the
+   latest selected allocation date for every line rather than promising an earlier delivery.
 8. Persist accepted supplier transaction IDs, poll for X12 855 acknowledgments, and compare every
    line deterministically. Expiring database leases prevent two Procurement Agent workers from
    recovering the same transaction concurrently.
@@ -110,6 +112,40 @@ With Docker running:
 docker compose up --build
 ```
 
+Compose applies migrations and idempotently seeds the UrbanX demo before starting the supplier
+simulator and agent host. To exercise the entire workflow automatically through the same uAgent
+handlers and approval cards, start only the infrastructure services and run the local verification
+manager as a one-off container:
+
+```bash
+docker compose up --build -d postgres supplier-simulator
+docker compose run --rm --no-deps agent-host \
+  python -m scripts.run_local_workflow --scenario happy_path
+```
+
+If those default host ports are already occupied, override only the published ports; containers
+continue using PostgreSQL 5432 and supplier port 8001 on the Compose network:
+
+```bash
+POSTGRES_HOST_PORT=55432 SUPPLIER_SIMULATOR_HOST_PORT=18001 \
+  docker compose up --build -d postgres supplier-simulator
+```
+
+The verification container exits after `LOCAL_WORKFLOW_COMPLETE=...`. The conflict and approved
+X12 860/865 path is reproducible against a freshly seeded database with:
+
+```bash
+docker compose down -v
+docker compose up --build -d postgres supplier-simulator
+docker compose run --rm --no-deps agent-host \
+  python -m scripts.run_local_workflow --scenario multi_conflict_counter_accepted
+```
+
+The harness is a deterministic CLI verification manager, not a custom frontend. It requires the
+five unique agent seeds and both local supplier keys in the ignored `.env` file; it generates its
+own ephemeral manager identity without writing that seed to disk. `docker compose down -v` removes
+the local demo database volume, so use it only when intentionally resetting demo evidence.
+
 The agent host exposes the uAgents/Bureau endpoint on port 8000. The standalone diagnostic FastAPI
 app in `apps.agent_host.health` provides `/health` and database-aware `/ready` when run separately.
 The supplier simulator exposes `/health`, `/ready`, supplier endpoints, and non-production admin
@@ -119,7 +155,7 @@ scenario controls.
 
 `.env.example` is authoritative. Important groups are:
 
-- Runtime: `APP_ENV`, `LOG_LEVEL`, `DATABASE_URL`
+- Runtime: `APP_ENV`, `LOG_LEVEL`, `DATABASE_URL`, and optional Compose host-port overrides
 - Fetch.ai: `ASI_ONE_API_KEY`, `ASI_ONE_MODEL`, `AGENTVERSE_API_KEY`
 - Identity: one `*_AGENT_SEED` for each of the five company agents
 - Supplier boundary: `SUPPLIER_SIMULATOR_BASE_URL`, `SUPPLIER_API_KEY`,

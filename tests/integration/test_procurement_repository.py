@@ -3,7 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -40,6 +40,12 @@ def test_procurement_repository_persists_approval_po_and_supplier_transaction() 
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(dbapi_connection: object, connection_record: object) -> None:
+        del connection_record
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")  # type: ignore[attr-defined]
+
     for table in (
         ApprovalDecisionRecord.__table__,
         PurchaseOrderRecord.__table__,
@@ -131,6 +137,12 @@ def test_procurement_evidence_is_immutable_idempotent_and_structured() -> None:
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(dbapi_connection: object, connection_record: object) -> None:
+        del connection_record
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")  # type: ignore[attr-defined]
+
     for table in (
         PurchaseOrderRecord.__table__,
         PurchaseOrderLineRecord.__table__,

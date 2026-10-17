@@ -12,6 +12,7 @@ SENSITIVE_ASSIGNMENT = re.compile(
     r"[ \t]*([^\s#]+)"
 )
 PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")
+API_TOKEN = re.compile(r"\bsk_[A-Za-z0-9_-]{32,}\b")
 
 
 def repository_files() -> tuple[Path, ...]:
@@ -37,6 +38,8 @@ def findings() -> list[str]:
         relative = path.relative_to(ROOT)
         if PRIVATE_KEY.search(content):
             detected.append(f"{relative}: private key material")
+        if API_TOKEN.search(content):
+            detected.append(f"{relative}: API token")
         for match in SENSITIVE_ASSIGNMENT.finditer(content):
             detected.append(
                 f"{relative}:{content.count(chr(10), 0, match.start()) + 1}: secret value"

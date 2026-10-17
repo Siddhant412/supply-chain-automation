@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from hashlib import sha256
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid5
@@ -325,8 +325,16 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
         submission = PurchaseOrderSubmitted.model_validate(submission_data)
         if acknowledgment.reply_to != str(submission.message_id):
             raise ValueError("acknowledgment does not answer the recorded PO submission")
+        forwarded = acknowledgment.model_copy(
+            update={
+                "message_id": uuid5(acknowledgment.message_id, "acknowledgment-agent"),
+                "reply_to": str(acknowledgment.message_id),
+                "sender_agent": "manufacturing-orchestrator",
+                "sent_at": datetime.now(UTC),
+            }
+        )
         acknowledgments = dict(snapshot.state.get("acknowledgments", {}))
-        acknowledgments[acknowledgment.po_id] = acknowledgment.model_dump(mode="json")
+        acknowledgments[acknowledgment.po_id] = forwarded.model_dump(mode="json")
         accepted = self.routing_store.update(
             acknowledgment.workflow_id,
             updates={"acknowledgments": acknowledgments},
@@ -338,8 +346,8 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
             ctx,
             snapshot,
             self.acknowledgment_address,
-            AcknowledgmentReceivedTransport.from_domain(acknowledgment),
-            acknowledgment.message_id,
+            AcknowledgmentReceivedTransport.from_domain(forwarded),
+            forwarded.message_id,
             "AcknowledgmentReceived",
         )
 
@@ -376,9 +384,17 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
         submission = ChangeOrderSubmitted.model_validate(submission_data)
         if response.reply_to != str(submission.message_id):
             raise ValueError("change response does not answer the recorded change submission")
+        forwarded = response.model_copy(
+            update={
+                "message_id": uuid5(response.message_id, "acknowledgment-agent"),
+                "reply_to": str(response.message_id),
+                "sender_agent": "manufacturing-orchestrator",
+                "sent_at": datetime.now(UTC),
+            }
+        )
         accepted = self.routing_store.update(
             response.workflow_id,
-            updates={"change_response": response.model_dump(mode="json")},
+            updates={"change_response": forwarded.model_dump(mode="json")},
             inbound_message_id=response.message_id,
         )
         if not accepted:
@@ -387,8 +403,8 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
             ctx,
             snapshot,
             self.acknowledgment_address,
-            ChangeResponseReceivedTransport.from_domain(response),
-            response.message_id,
+            ChangeResponseReceivedTransport.from_domain(forwarded),
+            forwarded.message_id,
             "ChangeResponseReceived",
         )
 
@@ -520,9 +536,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
         for line in assessment.lines:
             if line.shortage <= 0:
                 continue
-            integral = int(line.shortage)
-            if Decimal(integral) != line.shortage:
-                raise ValueError("sourcing transport requires integral shortage quantities")
+            integral = int(line.shortage.to_integral_value(rounding=ROUND_CEILING))
             shortages[line.component_sku] = integral
             required_by[line.component_sku] = assessment.required_by.isoformat()
         request = SourcingRequest(
