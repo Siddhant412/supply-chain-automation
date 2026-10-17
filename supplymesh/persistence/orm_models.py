@@ -93,13 +93,14 @@ class InventoryBalance(Base):
 
 class InventoryReservation(Base):
     __tablename__ = "inventory_reservations"
+    __table_args__ = (UniqueConstraint("demand_order_id", "component_sku"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     demand_order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("demand_orders.id"))
     component_sku: Mapped[str] = mapped_column(String(100), index=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
     priority: Mapped[str] = mapped_column(String(20))
-    status: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), index=True)
 
 
 class InboundSupply(Base):
@@ -188,6 +189,9 @@ class SupplierTransactionRecord(Base):
     __table_args__ = (
         UniqueConstraint("supplier_id", "idempotency_key"),
         UniqueConstraint("external_transaction_id"),
+        UniqueConstraint(
+            "response_message_id", name="uq_supplier_transactions_response_message_id"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -201,6 +205,8 @@ class SupplierTransactionRecord(Base):
     response_message_id: Mapped[uuid.UUID | None]
     approval_id: Mapped[uuid.UUID | None]
     reply_address: Mapped[str | None] = mapped_column(String(255))
+    lease_owner: Mapped[str | None] = mapped_column(String(100), index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     supplier_id: Mapped[str] = mapped_column(String(100))
     transaction_type: Mapped[str] = mapped_column(String(32))
     idempotency_key: Mapped[str] = mapped_column(String(64))

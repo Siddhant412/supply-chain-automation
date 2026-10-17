@@ -54,6 +54,7 @@ class SupplierGateway:
         self.po = po
         self.po_submissions = 0
         self.change_submissions = 0
+        self.po_status_checks = 0
 
     async def submit_purchase_order(
         self,
@@ -75,6 +76,7 @@ class SupplierGateway:
         self, supplier_id: str, transaction_id: str, *, correlation_id: str
     ) -> SupplierTransactionStatus:
         del supplier_id, transaction_id, correlation_id
+        self.po_status_checks += 1
         return SupplierTransactionStatus(
             status="ACKNOWLEDGED",
             document_type="855",
@@ -303,7 +305,7 @@ async def test_purchase_order_recovers_after_restart_without_duplicate_submissio
         transaction = session.scalar(select(SupplierTransactionRecord))
         documents = tuple(session.scalars(select(EdiDocumentRecord)))
     assert transaction is not None
-    assert transaction.status == "ACKNOWLEDGED"
+    assert transaction.status == "DELIVERED"
     assert {document.document_type for document in documents} == {"850", "855"}
     restarted_engine.dispose()
 
@@ -364,6 +366,7 @@ async def test_change_order_recovers_after_restart_without_duplicate_submission(
         ProcurementRepository(restarted_sessions),
     )
     deliveries = await restarted.recover_pending()
+    restarted.mark_delivery_complete(deliveries[0].submitted)
 
     assert gateway.change_submissions == 1
     assert len(deliveries) == 1
@@ -374,6 +377,65 @@ async def test_change_order_recovers_after_restart_without_duplicate_submission(
         transaction = session.scalar(select(SupplierTransactionRecord))
         documents = tuple(session.scalars(select(EdiDocumentRecord)))
     assert transaction is not None
-    assert transaction.status == "ACKNOWLEDGED"
+    assert transaction.status == "DELIVERED"
     assert {document.document_type for document in documents} == {"860", "865"}
+    restarted_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ready_delivery_is_replayed_after_restart_and_leased_once(tmp_path: Path) -> None:
+    database_path = tmp_path / "ready-delivery-recovery.db"
+    engine, sessions = session_factory(database_path)
+    create_tables(engine)
+    po = purchase_order()
+    approved = approval(po, "SEND_PURCHASE_ORDER")
+    persist_approval(sessions, approved)
+    gateway = SupplierGateway(po)
+    repository = ProcurementRepository(sessions)
+    service = ProcurementAgentService(
+        gateway,
+        SqlAlchemySideEffectJournal(sessions),
+        repository,
+    )
+    request = PurchaseOrderExecutionRequest(
+        correlation_id=uuid4(),
+        workflow_id=po.workflow_id,
+        sender_agent="manufacturing-orchestrator",
+        purchase_orders=(po,),
+        approval_id=str(approved.approval_id),
+    )
+
+    result = await service.execute_purchase_orders(request, reply_address="agent1orchestrator")
+    assert len(result) == 1
+    with sessions() as session:
+        transaction = session.scalar(select(SupplierTransactionRecord))
+        assert transaction is not None
+        assert transaction.status == "READY_TO_DELIVER"
+    engine.dispose()
+
+    restarted_engine, restarted_sessions = session_factory(database_path)
+    first_worker = ProcurementAgentService(
+        gateway,
+        SqlAlchemySideEffectJournal(restarted_sessions),
+        ProcurementRepository(restarted_sessions),
+    )
+    second_worker = ProcurementAgentService(
+        gateway,
+        SqlAlchemySideEffectJournal(restarted_sessions),
+        ProcurementRepository(restarted_sessions),
+    )
+    first_delivery = await first_worker.recover_pending()
+    second_delivery = await second_worker.recover_pending()
+
+    assert len(first_delivery) == 1
+    assert second_delivery == ()
+    assert gateway.po_submissions == 1
+    assert gateway.po_status_checks == 1
+    first_worker.mark_delivery_complete(first_delivery[0].submitted)
+    with restarted_sessions() as session:
+        delivered = session.scalar(select(SupplierTransactionRecord))
+        assert delivered is not None
+        assert delivered.status == "DELIVERED"
+        assert delivered.lease_owner is None
+        assert delivered.lease_expires_at is None
     restarted_engine.dispose()

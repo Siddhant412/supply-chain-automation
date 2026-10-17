@@ -109,3 +109,44 @@ class AuditRepository:
                 )
             )
         return event_id
+
+    def list_activity(self, workflow_id: UUID, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            messages = tuple(
+                session.scalars(
+                    select(AgentMessageLogRecord)
+                    .where(AgentMessageLogRecord.workflow_id == workflow_id)
+                    .order_by(AgentMessageLogRecord.sent_at)
+                )
+            )
+            events = tuple(
+                session.scalars(
+                    select(AuditEventRecord)
+                    .where(AuditEventRecord.workflow_id == workflow_id)
+                    .order_by(AuditEventRecord.created_at)
+                )
+            )
+        activity = [
+            {
+                "kind": "message",
+                "agent": message.sender,
+                "action": message.message_type,
+                "outcome": message.status,
+                "recipient": message.recipient,
+                "timestamp": message.sent_at.isoformat(),
+            }
+            for message in messages
+        ]
+        activity.extend(
+            {
+                "kind": "event",
+                "agent": event.actor_id,
+                "action": event.action,
+                "outcome": (event.after_json or {}).get("status", "RECORDED"),
+                "entity": event.entity_type,
+                "timestamp": event.created_at.isoformat(),
+            }
+            for event in events
+        )
+        activity.sort(key=lambda item: (str(item["timestamp"]), str(item["action"])))
+        return activity[-limit:]

@@ -1,6 +1,6 @@
 # Verification and Definition of Done Status
 
-Last verified: 2026-10-16 (America/Los_Angeles)
+Last verified: 2026-10-17 (America/Los_Angeles)
 
 This matrix separates executed evidence from code presence and external/manual blockers. A check
 means the cited automated test or reproducible command passed; unchecked items are not claimed.
@@ -10,9 +10,9 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [x] Ruff formatting and linting: `uv run ruff format --check . && uv run ruff check .`
 - [x] Strict typing for 43 agent/domain/persistence/protocol/service source files:
   `uv run --python 3.11 --isolated mypy`.
-- [x] Automated suite: 64 passed with `uv run pytest -q --cov=supplymesh --cov=apps`.
-- [x] Full `supplymesh` plus `apps` source coverage: 88% (`pytest-cov`).
-- [x] PostgreSQL migrations `0001`–`0006` upgrade, downgrade to base, and re-upgrade on a clean
+- [x] Automated suite: 74 passed with `uv run pytest -q --cov=supplymesh --cov=apps`.
+- [x] Full `supplymesh` plus `apps` source coverage: 89% (`pytest-cov`).
+- [x] PostgreSQL migrations `0001`–`0007` upgrade, downgrade to base, and re-upgrade on a clean
   PostgreSQL 17 database.
 - [x] Alembic reports no SupplyMesh schema drift after LangGraph checkpoint setup.
 - [x] PostgreSQL checkpoint restart: pause, close graph/saver, reopen/resume twice, complete.
@@ -20,7 +20,9 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [x] Five unique stable uAgent addresses derive from five distinct runtime-only seeds.
 - [x] Demand card submission traverses registered Orchestrator and Inventory uAgent protocol
   handlers, persists the demand/workflow before dispatch, and returns a correlated assessment card.
-- [ ] Docker Compose service startup (configuration validates; Docker daemon was unavailable).
+- [ ] Docker Compose service startup. `docker compose config --quiet` passed, but the 2026-10-17
+  image pull stalled in `docker-credential-desktop`; no service was created and the attempt was
+  stopped and cleaned up.
 
 ## Functional
 
@@ -39,8 +41,13 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [x] File-backed restart tests close the database after supplier acceptance but before local
   submission state is recorded, then reconstruct the Procurement Agent and finish 850/855 and
   860/865 exactly once without a duplicate supplier submission.
+- [x] Recovery after acknowledgment persistence replays the stored 855/865 with the same message
+  IDs without polling or submitting again; active database leases exclude a second worker.
+- [x] Tentative reservations persist idempotently and transition once to committed on confirmed
+  supply or released on cancellation.
 - [x] Raw and parsed EDI, acknowledgment lines, discrepancies, and change-order outcomes are
-  persisted idempotently as structured procurement evidence.
+  persisted idempotently as structured procurement evidence; malformed inbound EDI is retained as
+  invalid evidence instead of being discarded.
 
 ## Agentic and Fetch.ai
 
@@ -60,6 +67,10 @@ means the cited automated test or reproducible command passed; unchecked items a
   every callback is checked by the LangGraph event-transition reducer.
 - [x] Orchestrator and all specialists exchange typed uAgents contracts in handler-level integration
   tests with end-to-end correlation/reply validation and duplicate inbound suppression.
+- [x] Pending Orchestrator-to-specialist messages retain their validated typed payload and replay
+  with the original message ID after restart.
+- [x] Workflow completion builds and sends an Agent Activity card from bounded persisted message
+  and state-transition evidence.
 - [ ] All five agents registered with stable Agentverse profile URLs.
 - [ ] Orchestrator discoverable and directly usable through ASI:One.
 - [ ] Direct mention and planner-routed invocation verified live.
@@ -78,7 +89,7 @@ and human interaction in those products. No credentials or URLs were present in 
 - [x] PO/change-order intent is persisted before the supplier call; incomplete `SUBMITTING` and
   `PROCESSING` transactions are reconciled by the Procurement Agent's recovery interval.
 - [x] Durable agent-message delivery status and append-only material state-transition audit events
-  persist to PostgreSQL; message IDs are unique for deduplication.
+  persist to PostgreSQL; message IDs are unique for deduplication and pending payloads are replayable.
 - [x] Failures produce bounded public errors without raw stack traces.
 - [x] FX has PostgreSQL cache and non-expired fallback semantics.
 - [x] Live Frankfurter v2 lookup returned EUR/USD `1.122` dated 2026-10-16; automated tests cover
@@ -87,6 +98,8 @@ and human interaction in those products. No credentials or URLs were present in 
 - [ ] Live Agent Activity card rendered in ASI:One.
 - [ ] Public repository remote content independently verified after push.
 - [ ] Agentverse URLs, ASI:One URL, and demo video recorded.
+- [x] Repository secret check scans tracked and non-ignored untracked text for populated credential
+  variables, agent seeds, and private-key blocks; it passes locally and runs in CI.
 - [x] `detect-secrets 1.5.0` scan executed; findings were reviewed as documented placeholders,
   local-only database passwords, test keys, and generated cache tags. No real credential, private
   key, `.env`, or agent seed file was present.

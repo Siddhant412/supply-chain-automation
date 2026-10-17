@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from typing import Literal, Protocol
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4, uuid5
 
 from pydantic import ValidationError
 from uagents import Context
@@ -102,9 +102,17 @@ class ProcurementState(Protocol):
         poll_url: str,
     ) -> None: ...
 
-    def mark_transaction_acknowledged(self, supplier_id: str, idempotency_key: str) -> None: ...
+    def mark_transaction_ready(self, supplier_id: str, idempotency_key: str) -> None: ...
 
     def pending_transactions(self) -> tuple[PendingSupplierTransaction, ...]: ...
+
+    def claim_pending_transactions(
+        self, owner: str, *, lease_seconds: float = 30
+    ) -> tuple[PendingSupplierTransaction, ...]: ...
+
+    def release_claim(self, response_message_id: UUID, owner: str) -> None: ...
+
+    def mark_response_delivered(self, response_message_id: UUID) -> None: ...
 
     def record_edi_document(
         self,
@@ -146,6 +154,7 @@ class ProcurementAgentService:
         self.state = state
         self.poll_interval_seconds = poll_interval_seconds
         self.poll_timeout_seconds = poll_timeout_seconds
+        self.recovery_owner = f"procurement-{uuid4()}"
 
     async def execute_purchase_orders(
         self, request: PurchaseOrderExecutionRequest, *, reply_address: str
@@ -202,7 +211,7 @@ class ProcurementAgentService:
                 poll_url=accepted.poll_url,
             )
             status = await self._poll_purchase_order(po, accepted, request)
-            self.state.mark_transaction_acknowledged(po.supplier_id, key)
+            self.state.mark_transaction_ready(po.supplier_id, key)
             results.append(
                 (
                     submitted,
@@ -290,7 +299,7 @@ class ProcurementAgentService:
             supplier_transaction_id=accepted.supplier_transaction_id,
         )
         status = await self._poll_change_order(request, accepted)
-        self.state.mark_transaction_acknowledged(counter.supplier_id, key)
+        self.state.mark_transaction_ready(counter.supplier_id, key)
         return submitted, ChangeResponseReceived(
             message_id=uuid5(response_message_id, "acknowledgment"),
             correlation_id=request.correlation_id,
@@ -304,7 +313,7 @@ class ProcurementAgentService:
 
     async def recover_pending(self) -> tuple[RecoveryDelivery, ...]:
         deliveries: list[RecoveryDelivery] = []
-        for pending in self.state.pending_transactions():
+        for pending in self.state.claim_pending_transactions(self.recovery_owner):
             if pending.transaction_type == "PURCHASE_ORDER":
                 delivery = await self._recover_purchase_order(pending)
             else:
@@ -338,22 +347,28 @@ class ProcurementAgentService:
                 external_transaction_id=external_transaction_id,
                 poll_url=poll_url,
             )
-        status = await self.gateway.get_purchase_order_status(
-            po.supplier_id,
-            external_transaction_id,
-            correlation_id=str(pending.correlation_id),
-        )
-        if status.status != "ACKNOWLEDGED" or status.document_type != "855" or not status.x12:
-            return None
-        self.state.record_edi_document(
-            workflow_id=po.workflow_id,
-            supplier_id=po.supplier_id,
-            document_type="855",
-            direction="INBOUND",
-            raw_text=status.x12,
-            related_document_id=po.po_id,
-        )
-        self.state.mark_transaction_acknowledged(po.supplier_id, purchase_order_idempotency_key(po))
+        response_x12 = pending.response_x12
+        if pending.status != "READY_TO_DELIVER":
+            status = await self.gateway.get_purchase_order_status(
+                po.supplier_id,
+                external_transaction_id,
+                correlation_id=str(pending.correlation_id),
+            )
+            if status.status != "ACKNOWLEDGED" or status.document_type != "855" or not status.x12:
+                self.state.release_claim(pending.response_message_id, self.recovery_owner)
+                return None
+            response_x12 = status.x12
+            self.state.record_edi_document(
+                workflow_id=po.workflow_id,
+                supplier_id=po.supplier_id,
+                document_type="855",
+                direction="INBOUND",
+                raw_text=response_x12,
+                related_document_id=po.po_id,
+            )
+            self.state.mark_transaction_ready(po.supplier_id, purchase_order_idempotency_key(po))
+        if response_x12 is None:
+            raise ValueError("ready purchase-order delivery has no persisted 855")
         submitted = PurchaseOrderSubmitted(
             message_id=pending.response_message_id,
             correlation_id=pending.correlation_id,
@@ -375,7 +390,7 @@ class ProcurementAgentService:
                 reply_to=str(pending.response_message_id),
                 po_id=str(po.po_id),
                 po_version=po.version,
-                raw_x12=status.x12,
+                raw_x12=response_x12,
             ),
         )
 
@@ -404,24 +419,30 @@ class ProcurementAgentService:
                 external_transaction_id=external_transaction_id,
                 poll_url=poll_url,
             )
-        status = await self.gateway.get_change_order_status(
-            counter.supplier_id,
-            external_transaction_id,
-            correlation_id=str(pending.correlation_id),
-        )
-        if status.status != "ACKNOWLEDGED" or status.document_type != "865" or not status.x12:
-            return None
-        self.state.record_edi_document(
-            workflow_id=counter.workflow_id,
-            supplier_id=counter.supplier_id,
-            document_type="865",
-            direction="INBOUND",
-            raw_text=status.x12,
-            related_document_id=counter.po_id,
-        )
-        self.state.mark_transaction_acknowledged(
-            counter.supplier_id, counterproposal_idempotency_key(counter)
-        )
+        response_x12 = pending.response_x12
+        if pending.status != "READY_TO_DELIVER":
+            status = await self.gateway.get_change_order_status(
+                counter.supplier_id,
+                external_transaction_id,
+                correlation_id=str(pending.correlation_id),
+            )
+            if status.status != "ACKNOWLEDGED" or status.document_type != "865" or not status.x12:
+                self.state.release_claim(pending.response_message_id, self.recovery_owner)
+                return None
+            response_x12 = status.x12
+            self.state.record_edi_document(
+                workflow_id=counter.workflow_id,
+                supplier_id=counter.supplier_id,
+                document_type="865",
+                direction="INBOUND",
+                raw_text=response_x12,
+                related_document_id=counter.po_id,
+            )
+            self.state.mark_transaction_ready(
+                counter.supplier_id, counterproposal_idempotency_key(counter)
+            )
+        if response_x12 is None:
+            raise ValueError("ready change-order delivery has no persisted 865")
         submitted = ChangeOrderSubmitted(
             message_id=pending.response_message_id,
             correlation_id=pending.correlation_id,
@@ -443,9 +464,14 @@ class ProcurementAgentService:
                 reply_to=str(pending.response_message_id),
                 po_id=str(counter.po_id),
                 po_version=counter.change_version,
-                raw_x12=status.x12,
+                raw_x12=response_x12,
             ),
         )
+
+    def mark_delivery_complete(
+        self, submitted: PurchaseOrderSubmitted | ChangeOrderSubmitted
+    ) -> None:
+        self.state.mark_response_delivered(submitted.message_id)
 
     async def _poll_purchase_order(
         self,
@@ -528,6 +554,7 @@ def build_procurement_protocol(
             ):
                 await ctx.send(sender, PurchaseOrderSubmittedTransport.from_domain(submitted))
                 await ctx.send(sender, AcknowledgmentReceivedTransport.from_domain(acknowledgment))
+                service.mark_delivery_complete(submitted)
         except (ValidationError, ValueError, RuntimeError):
             await _send_failure(ctx, sender, msg, service.name, "PURCHASE_ORDER_EXECUTION")
         except Exception:
@@ -552,6 +579,7 @@ def build_procurement_protocol(
             )
             await ctx.send(sender, ChangeOrderSubmittedTransport.from_domain(submitted))
             await ctx.send(sender, ChangeResponseReceivedTransport.from_domain(response))
+            service.mark_delivery_complete(submitted)
         except (ValidationError, ValueError, RuntimeError):
             await _send_failure(ctx, sender, msg, service.name, "COUNTERPROPOSAL_EXECUTION")
         except Exception:
@@ -590,6 +618,7 @@ def build_procurement_protocol(
                         delivery.destination,
                         ChangeResponseReceivedTransport.from_domain(delivery.response),
                     )
+                service.mark_delivery_complete(delivery.submitted)
         except Exception:
             ctx.logger.exception("supplier transaction recovery failed")
 

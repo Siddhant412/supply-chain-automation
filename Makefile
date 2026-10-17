@@ -1,4 +1,4 @@
-.PHONY: install format lint typecheck test migrate seed up down check
+.PHONY: install format lint typecheck test secrets migrate seed up down check
 
 install:
 	uv sync
@@ -17,6 +17,9 @@ typecheck:
 test:
 	uv run pytest
 
+secrets:
+	uv run python scripts/check_secrets.py
+
 migrate:
 	uv run alembic upgrade head
 	uv run python scripts/setup_checkpoints.py
@@ -30,5 +33,5 @@ up:
 down:
 	docker compose down
 
-check: lint typecheck test
+check: lint typecheck test secrets
 

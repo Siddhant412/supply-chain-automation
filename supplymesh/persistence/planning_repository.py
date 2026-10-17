@@ -1,14 +1,15 @@
 from collections.abc import Callable
 from datetime import UTC, datetime, time
 from decimal import Decimal
-from uuid import UUID
+from typing import Literal
+from uuid import UUID, uuid5
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from supplymesh.cards.demand import DemandIntake
 from supplymesh.domain.enums import Priority
-from supplymesh.domain.models import BomComponent, Demand, InventoryPosition
+from supplymesh.domain.models import BomComponent, Demand, InventoryPosition, TentativeReservation
 from supplymesh.persistence.orm_models import (
     Bom,
     BomItem,
@@ -147,6 +148,59 @@ class PlanningRequestRepository:
             bom=components,
             inventory_positions=positions,
         )
+
+    def save_tentative_reservations(
+        self,
+        workflow_id: UUID,
+        reservations: tuple[TentativeReservation, ...],
+    ) -> None:
+        with self.session_factory() as session, session.begin():
+            demand = session.get(DemandOrder, workflow_id)
+            if demand is None:
+                raise ValueError("tentative reservations reference an unknown demand")
+            for reservation in reservations:
+                reservation_id = uuid5(workflow_id, f"reservation:{reservation.component_sku}")
+                existing = session.get(InventoryReservation, reservation_id)
+                if existing is not None:
+                    if (
+                        existing.component_sku != reservation.component_sku
+                        or existing.quantity != reservation.quantity
+                        or existing.priority != reservation.priority.value
+                    ):
+                        raise ValueError("reservation identity already has different content")
+                    continue
+                session.add(
+                    InventoryReservation(
+                        id=reservation_id,
+                        demand_order_id=workflow_id,
+                        component_sku=reservation.component_sku,
+                        quantity=reservation.quantity,
+                        priority=reservation.priority.value,
+                        status="TENTATIVE",
+                    )
+                )
+            if demand.status not in {"COMPLETED", "CANCELLED"}:
+                demand.status = "INVENTORY_RESERVED"
+
+    def transition_reservations(
+        self, workflow_id: UUID, *, status: Literal["COMMITTED", "RELEASED"]
+    ) -> int:
+        with self.session_factory() as session, session.begin():
+            demand = session.get(DemandOrder, workflow_id)
+            if demand is None:
+                raise ValueError("reservation transition references an unknown demand")
+            reservations = tuple(
+                session.scalars(
+                    select(InventoryReservation).where(
+                        InventoryReservation.demand_order_id == workflow_id,
+                        InventoryReservation.status == "TENTATIVE",
+                    )
+                )
+            )
+            for reservation in reservations:
+                reservation.status = status
+            demand.status = "COMPLETED" if status == "COMMITTED" else "CANCELLED"
+            return len(reservations)
 
     @staticmethod
     def _position(

@@ -106,4 +106,11 @@ def test_runtime_audit_is_idempotent_and_tracks_workflow_and_approval() -> None:
     assert events[1].after_json["status"] == "AWAITING_PO_APPROVAL"
     assert len(approvals) == 1
     assert approvals[0].id == approval.approval_id
+    activity = audit.list_activity(workflow_id)
+    assert {item["kind"] for item in activity} == {"event", "message"}
+    assert any(
+        item["action"] == "PurchaseOrderExecutionRequest" and item["outcome"] == "DELIVERED"
+        for item in activity
+    )
+    assert any(item["action"] == "SEND_PURCHASE_ORDER" for item in activity)
     engine.dispose()

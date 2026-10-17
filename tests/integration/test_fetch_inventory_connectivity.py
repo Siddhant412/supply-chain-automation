@@ -394,7 +394,8 @@ def test_planning_and_workflow_repositories_persist_before_transport() -> None:
 
     workflow_id = uuid4()
     correlation_id = uuid4()
-    request = PlanningRequestRepository(sessions).create_request(
+    planning_repository = PlanningRequestRepository(sessions)
+    request = planning_repository.create_request(
         DemandIntake(
             product_sku="MOTO-URBANX-2026",
             quantity=75,
@@ -426,6 +427,8 @@ def test_planning_and_workflow_repositories_persist_before_transport() -> None:
     assert duplicate is not None
     assert duplicate.workflow_id == workflow_id
     report = InventoryAgentService().handle(request)
+    planning_repository.save_tentative_reservations(workflow_id, report.tentative_reservations)
+    planning_repository.save_tentative_reservations(workflow_id, report.tentative_reservations)
     workflow_repository.record_inventory_result(
         workflow_id,
         {
@@ -443,4 +446,52 @@ def test_planning_and_workflow_repositories_persist_before_transport() -> None:
         assert workflow is not None
         assert workflow.status == "SOURCING"
         assert workflow.checkpoint_version == 2
+        reservations = tuple(
+            session.scalars(
+                select(InventoryReservation).where(
+                    InventoryReservation.demand_order_id == workflow_id
+                )
+            )
+        )
+        assert len(reservations) == 1
+        assert reservations[0].status == "TENTATIVE"
+
+    assert planning_repository.transition_reservations(workflow_id, status="RELEASED") == 1
+    assert planning_repository.transition_reservations(workflow_id, status="RELEASED") == 0
+    with sessions() as session:
+        released = session.scalar(
+            select(InventoryReservation).where(InventoryReservation.demand_order_id == workflow_id)
+        )
+        assert released is not None
+        assert released.status == "RELEASED"
+
+    committed_workflow_id = uuid4()
+    committed_request = planning_repository.create_request(
+        DemandIntake(
+            product_sku="MOTO-URBANX-2026",
+            quantity=10,
+            required_by=date(2026, 12, 1),
+            priority="rush",
+        ),
+        workflow_id=committed_workflow_id,
+        correlation_id=uuid4(),
+        as_of=datetime(2026, 10, 16, tzinfo=UTC),
+    )
+    committed_report = InventoryAgentService().handle(committed_request)
+    planning_repository.save_tentative_reservations(
+        committed_workflow_id, committed_report.tentative_reservations
+    )
+    assert planning_repository.transition_reservations(
+        committed_workflow_id, status="COMMITTED"
+    ) == len(committed_report.tentative_reservations)
+    with sessions() as session:
+        committed = tuple(
+            session.scalars(
+                select(InventoryReservation).where(
+                    InventoryReservation.demand_order_id == committed_workflow_id
+                )
+            )
+        )
+        assert committed
+        assert {reservation.status for reservation in committed} == {"COMMITTED"}
     engine.dispose()

@@ -126,3 +126,54 @@ def test_conflict_counterproposal_requires_approval_and_can_complete() -> None:
         cfg,
     )
     assert completed["status"] == "COMPLETED"
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        ("accept", "COMPLETED"),
+        ("switch", "WAITING_FOR_PLAN_APPROVAL"),
+        ("split", "WAITING_FOR_PLAN_APPROVAL"),
+        ("cancel", "CANCELLED"),
+    ],
+)
+def test_conflict_resolution_paths_are_terminal_or_return_to_sourcing(
+    action: str, expected: str
+) -> None:
+    graph = build_procurement_graph(InMemorySaver())
+    cfg = config(f"exception-{action}")
+    graph.invoke(
+        {
+            "workflow_id": str(uuid4()),
+            "has_shortages": True,
+            "selected_plan_id": "plan-1",
+            "selected_plan_version": 1,
+            "purchase_order_batch_id": "batch-1",
+            "purchase_order_batch_version": 1,
+            "purchase_order_ids": ["po-1"],
+            "current_po_version": 1,
+            "ack_has_conflict": True,
+        },
+        cfg,
+    )
+    graph.invoke(
+        Command(resume={"action": "approve_plan", "target_id": "plan-1", "target_version": 1}),
+        cfg,
+    )
+    graph.invoke(
+        Command(
+            resume={
+                "action": "approve_and_send_purchase_orders",
+                "target_id": "batch-1",
+                "target_version": 1,
+            }
+        ),
+        cfg,
+    )
+
+    resolved = graph.invoke(
+        Command(resume={"action": action, "target_id": "po-1", "target_version": 1}),
+        cfg,
+    )
+
+    assert resolved["status"] == expected

@@ -297,4 +297,19 @@ def test_procurement_evidence_is_immutable_idempotent_and_structured() -> None:
         change = session.scalar(select(ChangeOrderRecord))
         assert change is not None
         assert change.status == "ACCEPTED"
+
+    invalid_document = repository.record_edi_document(
+        workflow_id=po.workflow_id,
+        supplier_id=po.supplier_id,
+        document_type="855",
+        direction="INBOUND",
+        raw_text="MALFORMED-X12",
+        related_document_id=po.po_id,
+    )
+    with sessions() as session:
+        invalid = session.get(EdiDocumentRecord, invalid_document)
+        assert invalid is not None
+        assert invalid.validation_status == "INVALID"
+        assert invalid.raw_text == "MALFORMED-X12"
+        assert "error" in invalid.parsed_json
     engine.dispose()

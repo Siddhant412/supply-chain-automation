@@ -18,6 +18,7 @@ from supplymesh.agents.transport import (
     ChangeOrderSubmittedTransport,
     ChangeResponseReceivedTransport,
     CounterproposalExecutionTransport,
+    DemandPlanningTransport,
     ProcurementPlansReadyTransport,
     PurchaseOrderExecutionTransport,
     PurchaseOrderSubmittedTransport,
@@ -26,7 +27,7 @@ from supplymesh.agents.transport import (
     SupplierQuotesCollectedTransport,
     WorkflowStatusResponseTransport,
 )
-from supplymesh.cards.completion import completion_detail
+from supplymesh.cards.completion import agent_activity_detail, completion_detail
 from supplymesh.cards.exception import exception_review
 from supplymesh.cards.inventory import inventory_assessment_detail
 from supplymesh.cards.plans import plan_approval_review, procurement_plan_carousel
@@ -36,7 +37,7 @@ from supplymesh.cards.procurement import (
     purchase_order_batch_review,
 )
 from supplymesh.cards.renderer import CardSelection
-from supplymesh.domain.models import InventoryAssessment
+from supplymesh.domain.models import InventoryAssessment, TentativeReservation
 from supplymesh.domain.procurement import (
     ApprovalRecord,
     Counterproposal,
@@ -45,10 +46,10 @@ from supplymesh.domain.procurement import (
 )
 from supplymesh.domain.sourcing import ProcurementPlan
 from supplymesh.persistence.audit_repository import AuditRepository
-from supplymesh.persistence.workflow_repository import WorkflowSnapshot
+from supplymesh.persistence.workflow_repository import PendingOutbound, WorkflowSnapshot
 from supplymesh.protocols.common import WorkflowStatusResponse
 from supplymesh.protocols.exceptions import AcknowledgmentComparisonResult
-from supplymesh.protocols.planning import InventoryShortageReport
+from supplymesh.protocols.planning import DemandPlanningRequest, InventoryShortageReport
 from supplymesh.protocols.procurement import (
     AcknowledgmentReceived,
     ChangeOrderSubmitted,
@@ -88,7 +89,10 @@ class OrchestrationStore(Protocol):
         destination: str,
         message_type: str,
         status: str,
+        payload_json: str | None = None,
     ) -> None: ...
+
+    def pending_outbound(self) -> tuple[PendingOutbound, ...]: ...
 
     def save_approval(
         self,
@@ -106,6 +110,18 @@ class OrchestrationStore(Protocol):
     ) -> ApprovalRecord: ...
 
 
+class ReservationStore(Protocol):
+    def save_tentative_reservations(
+        self,
+        workflow_id: UUID,
+        reservations: tuple[TentativeReservation, ...],
+    ) -> None: ...
+
+    def transition_reservations(
+        self, workflow_id: UUID, *, status: Literal["COMMITTED", "RELEASED"]
+    ) -> int: ...
+
+
 @dataclass(frozen=True)
 class OrchestrationCoordinator(FetchConnectivityCoordinator):
     sourcing_address: str = ""
@@ -113,10 +129,33 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
     acknowledgment_address: str = ""
     transition_graph: Any | None = None
     audit: AuditRepository | None = None
+    reservation_store: ReservationStore | None = None
 
     @property
     def routing_store(self) -> OrchestrationStore:
         return cast(OrchestrationStore, self.workflows)
+
+    def _record_inventory_delivery(self, request: DemandPlanningRequest, status: str) -> None:
+        self.routing_store.record_outbound(
+            request.workflow_id,
+            message_id=request.message_id,
+            destination=self.inventory_address,
+            message_type=request.message_type,
+            status=status,
+            payload_json=request.model_dump_json(),
+        )
+        if self.audit is not None:
+            self.audit.log_message(
+                workflow_id=request.workflow_id,
+                message_id=request.message_id,
+                sender="manufacturing-orchestrator",
+                recipient=self.inventory_address,
+                message_type=request.message_type,
+                payload_hash=sha256(request.model_dump_json().encode()).hexdigest(),
+                status=status,
+                sent_at=request.sent_at,
+                received_at=datetime.now(UTC) if status != "PENDING" else None,
+            )
 
     async def complete_inventory(
         self, ctx: MessageContext, report: InventoryShortageReport
@@ -127,6 +166,12 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
         snapshot = self._snapshot(report.workflow_id)
         event = "inventory_shortage" if assessment.has_shortages else "inventory_sufficient"
         next_status = self._advance(snapshot, event)
+        if self.reservation_store is not None:
+            self.reservation_store.save_tentative_reservations(
+                report.workflow_id, report.tentative_reservations
+            )
+            if next_status == "COMPLETED":
+                self._transition_reservations(report.workflow_id, "COMMITTED")
         accepted = self.routing_store.update(
             report.workflow_id,
             status=next_status,
@@ -363,6 +408,8 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
             raise ValueError("change status does not answer the recorded supplier response")
         is_accepted = result.status == "CHANGE_ACCEPTED" and result.summary.get("accepted") is True
         status = self._advance(snapshot, "change_accepted" if is_accepted else "change_rejected")
+        if status == "COMPLETED":
+            self._transition_reservations(result.workflow_id, "COMMITTED")
         accepted = self.routing_store.update(
             result.workflow_id,
             status=status,
@@ -411,6 +458,8 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
                 snapshot,
                 "acknowledgments_conflicted" if conflicts else "acknowledgments_matched",
             )
+            if status == "COMPLETED":
+                self._transition_reservations(result.workflow_id, "COMMITTED")
         accepted = self.routing_store.update(
             result.workflow_id,
             status=status,
@@ -638,6 +687,10 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
             return
         event = "exception_accepted" if selection.action == "accept" else "exception_cancelled"
         status = self._advance(snapshot, event)
+        self._transition_reservations(
+            snapshot.workflow_id,
+            "COMMITTED" if status == "COMPLETED" else "RELEASED",
+        )
         self.routing_store.update(snapshot.workflow_id, status=status, updates={"decision": event})
         if status == "COMPLETED":
             await self._send_completion(ctx, self._snapshot(snapshot.workflow_id))
@@ -742,6 +795,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
 
     async def _cancel(self, ctx: MessageContext, snapshot: WorkflowSnapshot, event: str) -> None:
         status = self._advance(snapshot, event)
+        self._transition_reservations(snapshot.workflow_id, "RELEASED")
         self.routing_store.update(snapshot.workflow_id, status=status)
         await self._send_chat(
             ctx,
@@ -780,6 +834,32 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
             "Procurement is complete and the supplier commitments are confirmed.",
             card.metadata(),
         )
+        if self.audit is not None:
+            activities = self.audit.list_activity(snapshot.workflow_id)
+            await self._send_chat(
+                ctx,
+                snapshot.conversation_id,
+                "Agent activity and durable workflow evidence are available for review.",
+                agent_activity_detail(activities).metadata(),
+            )
+
+    def _transition_reservations(
+        self, workflow_id: UUID, status: Literal["COMMITTED", "RELEASED"]
+    ) -> None:
+        if self.reservation_store is None:
+            return
+        changed = self.reservation_store.transition_reservations(workflow_id, status=status)
+        if self.audit is not None:
+            self.audit.append_event(
+                workflow_id=workflow_id,
+                actor_type="AGENT",
+                actor_id="manufacturing-orchestrator",
+                action=f"RESERVATIONS_{status}",
+                entity_type="inventory_reservation",
+                entity_id=str(workflow_id),
+                before={"status": "TENTATIVE"},
+                after={"status": status, "changed": changed},
+            )
 
     async def _fail(
         self,
@@ -820,6 +900,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
             destination=destination,
             message_type=message_type,
             status="PENDING",
+            payload_json=str(payload_json),
         )
         if self.audit is not None:
             self.audit.log_message(
@@ -864,6 +945,60 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
                 f"The {message_type} destination could not be reached safely.",
                 message_id,
             )
+
+    async def recover_outbound(self, ctx: MessageContext) -> None:
+        for pending in self.routing_store.pending_outbound():
+            wire = self._outbound_wire(pending)
+            delivery = await ctx.send(pending.destination, wire)
+            failed = getattr(delivery, "status", None) == DeliveryStatus.FAILED
+            self.routing_store.record_outbound(
+                pending.workflow_id,
+                message_id=pending.message_id,
+                destination=pending.destination,
+                message_type=pending.message_type,
+                status="FAILED" if failed else "DELIVERED",
+            )
+            if self.audit is not None:
+                self.audit.log_message(
+                    workflow_id=pending.workflow_id,
+                    message_id=pending.message_id,
+                    sender="manufacturing-orchestrator",
+                    recipient=pending.destination,
+                    message_type=pending.message_type,
+                    payload_hash=sha256(pending.payload_json.encode()).hexdigest(),
+                    status="FAILED" if failed else "DELIVERED",
+                    sent_at=datetime.now(UTC),
+                    received_at=datetime.now(UTC),
+                )
+
+    @staticmethod
+    def _outbound_wire(pending: PendingOutbound) -> object:
+        builders: dict[str, Any] = {
+            "DemandPlanningRequest": lambda: DemandPlanningTransport.from_domain(
+                DemandPlanningRequest.model_validate_json(pending.payload_json)
+            ),
+            "SourcingRequest": lambda: SourcingRequestTransport.from_domain(
+                SourcingRequest.model_validate_json(pending.payload_json)
+            ),
+            "PurchaseOrderExecutionRequest": lambda: PurchaseOrderExecutionTransport.from_domain(
+                PurchaseOrderExecutionRequest.model_validate_json(pending.payload_json)
+            ),
+            "CounterproposalExecutionRequest": lambda: (
+                CounterproposalExecutionTransport.from_domain(
+                    CounterproposalExecutionRequest.model_validate_json(pending.payload_json)
+                )
+            ),
+            "AcknowledgmentReceived": lambda: AcknowledgmentReceivedTransport.from_domain(
+                AcknowledgmentReceived.model_validate_json(pending.payload_json)
+            ),
+            "ChangeResponseReceived": lambda: ChangeResponseReceivedTransport.from_domain(
+                ChangeResponseReceived.model_validate_json(pending.payload_json)
+            ),
+        }
+        builder = builders.get(pending.message_type)
+        if builder is None:
+            raise ValueError(f"unsupported pending outbound type: {pending.message_type}")
+        return builder()
 
     @staticmethod
     async def _send_chat(
@@ -960,7 +1095,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
 
 
 def build_specialist_response_protocol(
-    coordinator: OrchestrationCoordinator,
+    coordinator: OrchestrationCoordinator, *, recovery_interval_seconds: float = 2
 ) -> AgentProtocol:
     protocol = AgentProtocol(name="SupplyMeshOrchestratorSpecialists", version="1.0.0")
 
@@ -1019,6 +1154,23 @@ def build_specialist_response_protocol(
             await coordinator.handle_failure(ctx, msg)
         except (ValidationError, ValueError):
             ctx.logger.warning("rejected invalid or stale specialist failure")
+
+    @protocol.on_interval(
+        recovery_interval_seconds,
+        messages={
+            DemandPlanningTransport,
+            SourcingRequestTransport,
+            PurchaseOrderExecutionTransport,
+            CounterproposalExecutionTransport,
+            AcknowledgmentReceivedTransport,
+            ChangeResponseReceivedTransport,
+        },
+    )
+    async def recover_pending_outbound(ctx: Context) -> None:
+        try:
+            await coordinator.recover_outbound(ctx)
+        except Exception:
+            ctx.logger.exception("orchestrator outbound recovery failed")
 
     return protocol
 

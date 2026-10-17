@@ -327,9 +327,22 @@ class ProcurementState:
         del counterproposal, external_transaction_id, poll_url
         self.events.append("persist_change_submission")
 
-    def mark_transaction_acknowledged(self, supplier_id: str, idempotency_key: str) -> None:
+    def mark_transaction_ready(self, supplier_id: str, idempotency_key: str) -> None:
         del supplier_id, idempotency_key
-        self.events.append("persist_acknowledged")
+        self.events.append("persist_ready")
+
+    def mark_response_delivered(self, response_message_id: UUID) -> None:
+        del response_message_id
+        self.events.append("persist_delivered")
+
+    def claim_pending_transactions(
+        self, owner: str, *, lease_seconds: float = 30
+    ) -> tuple[object, ...]:
+        del owner, lease_seconds
+        return ()
+
+    def release_claim(self, response_message_id: UUID, owner: str) -> None:
+        del response_message_id, owner
 
     def pending_transactions(self) -> tuple[object, ...]:
         return ()
@@ -430,7 +443,8 @@ async def test_procurement_transport_persists_executes_and_forwards_855() -> Non
         "journal_success",
         "persist_submission",
         "persist_855",
-        "persist_acknowledged",
+        "persist_ready",
+        "persist_delivered",
     ]
 
 
@@ -489,7 +503,8 @@ async def test_procurement_transport_executes_approved_counterproposal_and_forwa
         "journal_success",
         "persist_change_submission",
         "persist_865",
-        "persist_acknowledged",
+        "persist_ready",
+        "persist_delivered",
     ]
 
 

@@ -85,3 +85,6 @@ def test_small_price_increase_requires_medium_exception_and_stale_ack_is_quarant
     stale = compare_acknowledgment(po(), acknowledgment(version=1))
     assert stale.status == "QUARANTINED"
     assert stale.recommended_action == "cancel"
+    future = compare_acknowledgment(po(), acknowledgment(version=3))
+    assert future.status == "QUARANTINED"
+    assert future.recommended_action == "cancel"

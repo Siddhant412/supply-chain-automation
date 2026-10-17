@@ -1,6 +1,6 @@
 import os
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 
 from apps.supplier_simulator.config import load_supplier_profiles
 from apps.supplier_simulator.service import RfqService
@@ -32,8 +32,12 @@ def create_app(*, api_key: str | None = None, admin_api_key: str | None = None) 
         return {"status": "ok", "service": "supplier-simulator"}
 
     @application.get("/ready")
-    def ready() -> dict[str, str]:
-        return {"status": "ready" if expected_api_key and expected_admin_key else "not_ready"}
+    def ready(response: Response) -> dict[str, str]:
+        configured = bool(expected_api_key and (expected_admin_key or app_env == "production"))
+        if not configured:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return {"status": "not_ready", "reason": "required API keys are not configured"}
+        return {"status": "ready", "service": "supplier-simulator"}
 
     @application.get("/api/v1/suppliers/{supplier_id}/capacity")
     def capacity(

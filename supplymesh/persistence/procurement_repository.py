@@ -1,9 +1,11 @@
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Any, Literal
 from uuid import UUID, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from supplymesh.domain.exceptions import AcknowledgmentComparison
@@ -36,7 +38,9 @@ from supplymesh.services.procurement_service import purchase_order_idempotency_k
 @dataclass(frozen=True)
 class PendingSupplierTransaction:
     transaction_type: Literal["PURCHASE_ORDER", "CHANGE_ORDER"]
-    status: Literal["SUBMITTING", "PROCESSING"]
+    status: Literal["SUBMITTING", "PROCESSING", "READY_TO_DELIVER"]
+    supplier_id: str
+    idempotency_key: str
     workflow_id: UUID
     correlation_id: UUID
     request_message_id: UUID
@@ -45,6 +49,8 @@ class PendingSupplierTransaction:
     reply_address: str
     external_transaction_id: str | None
     poll_url: str | None
+    response_x12: str | None
+    lease_owner: str | None
     purchase_order: PurchaseOrder | None = None
     counterproposal: Counterproposal | None = None
 
@@ -223,7 +229,7 @@ class ProcurementRepository:
             transaction.status = "PROCESSING"
             transaction.attempts += 1
 
-    def mark_transaction_acknowledged(self, supplier_id: str, idempotency_key: str) -> None:
+    def mark_transaction_ready(self, supplier_id: str, idempotency_key: str) -> None:
         with self.session_factory() as session, session.begin():
             transaction = session.scalar(
                 select(SupplierTransactionRecord).where(
@@ -233,14 +239,81 @@ class ProcurementRepository:
             )
             if transaction is None:
                 raise ValueError("supplier transaction was not found")
-            transaction.status = "ACKNOWLEDGED"
+            transaction.status = "READY_TO_DELIVER"
+
+    def mark_response_delivered(self, response_message_id: UUID) -> None:
+        with self.session_factory() as session, session.begin():
+            transaction = session.scalar(
+                select(SupplierTransactionRecord).where(
+                    SupplierTransactionRecord.response_message_id == response_message_id
+                )
+            )
+            if transaction is None:
+                raise ValueError("supplier response transaction was not found")
+            transaction.status = "DELIVERED"
+            transaction.lease_owner = None
+            transaction.lease_expires_at = None
+
+    def claim_pending_transactions(
+        self, owner: str, *, lease_seconds: float = 30
+    ) -> tuple[PendingSupplierTransaction, ...]:
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(seconds=lease_seconds)
+        with self.session_factory() as session, session.begin():
+            candidate_ids = tuple(
+                session.scalars(
+                    select(SupplierTransactionRecord.id)
+                    .where(
+                        SupplierTransactionRecord.status.in_(
+                            ("SUBMITTING", "PROCESSING", "READY_TO_DELIVER")
+                        ),
+                        or_(
+                            SupplierTransactionRecord.lease_owner == owner,
+                            SupplierTransactionRecord.lease_owner.is_(None),
+                            SupplierTransactionRecord.lease_expires_at < now,
+                        ),
+                    )
+                    .order_by(SupplierTransactionRecord.created_at)
+                )
+            )
+            for transaction_id in candidate_ids:
+                session.execute(
+                    update(SupplierTransactionRecord)
+                    .where(
+                        SupplierTransactionRecord.id == transaction_id,
+                        or_(
+                            SupplierTransactionRecord.lease_owner == owner,
+                            SupplierTransactionRecord.lease_owner.is_(None),
+                            SupplierTransactionRecord.lease_expires_at < now,
+                        ),
+                    )
+                    .values(lease_owner=owner, lease_expires_at=expires_at)
+                )
+        return tuple(
+            pending for pending in self.pending_transactions() if pending.lease_owner == owner
+        )
+
+    def release_claim(self, response_message_id: UUID, owner: str) -> None:
+        with self.session_factory() as session, session.begin():
+            session.execute(
+                update(SupplierTransactionRecord)
+                .where(
+                    SupplierTransactionRecord.response_message_id == response_message_id,
+                    SupplierTransactionRecord.lease_owner == owner,
+                )
+                .values(lease_owner=None, lease_expires_at=None)
+            )
 
     def pending_transactions(self) -> tuple[PendingSupplierTransaction, ...]:
         with self.session_factory() as session:
             rows = tuple(
                 session.scalars(
                     select(SupplierTransactionRecord)
-                    .where(SupplierTransactionRecord.status.in_(("SUBMITTING", "PROCESSING")))
+                    .where(
+                        SupplierTransactionRecord.status.in_(
+                            ("SUBMITTING", "PROCESSING", "READY_TO_DELIVER")
+                        )
+                    )
                     .order_by(SupplierTransactionRecord.created_at, SupplierTransactionRecord.id)
                 )
             )
@@ -283,15 +356,30 @@ class ProcurementRepository:
                 else:
                     continue
                 if row.status == "SUBMITTING":
-                    status: Literal["SUBMITTING", "PROCESSING"] = "SUBMITTING"
+                    status: Literal["SUBMITTING", "PROCESSING", "READY_TO_DELIVER"] = "SUBMITTING"
                 elif row.status == "PROCESSING":
                     status = "PROCESSING"
+                elif row.status == "READY_TO_DELIVER":
+                    status = "READY_TO_DELIVER"
                 else:
                     continue
+                response_document_type = "855" if transaction_type == "PURCHASE_ORDER" else "865"
+                response_document = session.scalar(
+                    select(EdiDocumentRecord)
+                    .where(
+                        EdiDocumentRecord.related_document_id == po_id,
+                        EdiDocumentRecord.document_type == response_document_type,
+                        EdiDocumentRecord.direction == "INBOUND",
+                    )
+                    .order_by(EdiDocumentRecord.created_at.desc())
+                    .limit(1)
+                )
                 pending.append(
                     PendingSupplierTransaction(
                         transaction_type=transaction_type,
                         status=status,
+                        supplier_id=row.supplier_id,
+                        idempotency_key=row.idempotency_key,
                         workflow_id=workflow_id,
                         correlation_id=correlation_id,
                         request_message_id=request_message_id,
@@ -300,6 +388,10 @@ class ProcurementRepository:
                         reply_address=reply_address,
                         external_transaction_id=row.external_transaction_id,
                         poll_url=row.poll_url,
+                        response_x12=(
+                            response_document.raw_text if response_document is not None else None
+                        ),
+                        lease_owner=row.lease_owner,
                         purchase_order=po,
                         counterproposal=counter,
                     )
@@ -323,8 +415,14 @@ class ProcurementRepository:
         raw_text: str,
         related_document_id: UUID,
     ) -> UUID:
-        control_number = self._control_number(raw_text)
-        parsed = self._parse_edi(document_type, raw_text)
+        try:
+            control_number = self._control_number(raw_text)
+            parsed = self._parse_edi(document_type, raw_text)
+            validation_status = "VALID"
+        except ValueError as exc:
+            control_number = f"INVALID-{sha256(raw_text.encode()).hexdigest()[:12]}"
+            parsed = {"error": str(exc)}
+            validation_status = "INVALID"
         document_id = uuid5(
             workflow_id,
             f"edi:{supplier_id}:{document_type}:{control_number}",
@@ -350,7 +448,7 @@ class ProcurementRepository:
                     related_document_id=related_document_id,
                     raw_text=raw_text,
                     parsed_json=parsed,
-                    validation_status="VALID",
+                    validation_status=validation_status,
                 )
             )
         return document_id

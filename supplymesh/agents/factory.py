@@ -153,15 +153,17 @@ def build_company_agents(
         publish_manifest=publish_manifests,
     )
     audit_repository = AuditRepository(_session_factory)
+    planning_repository = PlanningRequestRepository(_session_factory)
     coordinator = OrchestrationCoordinator(
         inventory_address=inventory.address,
-        requests=PlanningRequestRepository(_session_factory),
+        requests=planning_repository,
         workflows=WorkflowRepository(_session_factory, audit_repository),
         sourcing_address=sourcing.address,
         procurement_address=procurement.address,
         acknowledgment_address=acknowledgment.address,
         transition_graph=build_event_transition_graph(),
         audit=audit_repository,
+        reservation_store=planning_repository,
     )
     orchestrator = build_orchestrator_agent(
         seed=seeds.orchestrator,

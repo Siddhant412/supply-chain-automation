@@ -56,14 +56,16 @@ Each identity requires its own environment-only seed. The host rejects missing o
 4. Request quotes concurrently from three configuration-driven supplier routes.
 5. Produce cheapest, fastest, balanced, risk-aware, and split plans with OR-Tools.
 6. Pause for plan approval, then pause separately before sending purchase orders.
-7. Persist the approved PO, raw X12 850, and supplier-transaction intent before sending; journal
-   the idempotent supplier side effect before and after the call.
+7. Persist the approved PO, raw X12 850, supplier-transaction intent, and outbound agent message
+   before sending; journal every idempotent external side effect before and after the call.
 8. Persist accepted supplier transaction IDs, poll for X12 855 acknowledgments, and compare every
-   line deterministically. A restarted Procurement Agent resumes incomplete 850/855 polling from
-   the database without submitting the PO again.
-9. Complete exact matches. For material differences, pause for accept, counter, switch, split,
-   or cancel.
-10. A human-approved counterproposal follows the same durable intent/journal/recovery sequence for
+   line deterministically. Expiring database leases prevent two Procurement Agent workers from
+   recovering the same transaction concurrently.
+9. Persist the acknowledgment in `READY_TO_DELIVER` before sending it to the Orchestrator and
+   Acknowledgment Agent. A restart replays the same stable message IDs without resubmitting the PO.
+10. Commit tentative reservations for exact/accepted supply, or release them on cancellation. For
+    material differences, pause for accept, counter, switch, split, or cancel.
+11. A human-approved counterproposal follows the same durable intent/journal/recovery sequence for
     X12 860 and persists the supplier's X12 865 response.
 
 LangGraph checkpoints live in PostgreSQL. A verified restart test closes and reconstructs the
@@ -131,8 +133,9 @@ Do not commit `.env`, private keys, seed files, or Agentverse state. The `.gitig
 
 ## Database and seed data
 
-Alembic owns SupplyMesh tables, including raw/parsed EDI documents, acknowledgment lines,
-exceptions, change orders, and restart metadata for supplier transactions. LangGraph owns its
+Alembic owns SupplyMesh tables, including reservation lifecycle state, raw/parsed EDI documents,
+acknowledgment lines, exceptions, change orders, delivery leases, and restart metadata for supplier
+transactions. LangGraph owns its
 `checkpoint*` tables through
 `PostgresSaver.setup()`; Alembic intentionally excludes only those framework-owned tables from
 drift checks. Migrations and checkpoint setup are both included in `make migrate`.
@@ -147,6 +150,7 @@ reservations. Motorcycle facts are data, not domain code.
 make lint
 make typecheck
 make test
+make secrets
 make check
 DATABASE_URL=postgresql+psycopg://... uv run alembic check
 ```
@@ -154,7 +158,9 @@ DATABASE_URL=postgresql+psycopg://... uv run alembic check
 The suite contains unit, supplier-contract, workflow, and local end-to-end tests. It covers exact
 and conflicting acknowledgments, duplicate external calls, partial suppliers, all-supplier
 failure, stale approvals, FX fallback, controlled recovery, PostgreSQL checkpoint resumption, and
-file-backed process-restart recovery after supplier acceptance for both 850/855 and 860/865.
+file-backed process-restart recovery after supplier acceptance and after acknowledgment persistence
+for both 850/855 and 860/865. It also covers exclusive recovery leases, durable specialist-message
+replay, reservation commit/release, malformed EDI evidence, and runtime activity-card delivery.
 The Fetch integration tests drive the card conversation through registered protocol handlers from
 demand intake to Inventory, Sourcing, Procurement, Acknowledgment, and final completion. They
 verify strict wire serialization/correlation, durable message deduplication, separate plan/PO/change
@@ -191,11 +197,13 @@ local card builders cover intake, plans, approval, exceptions, completion, and a
 structured card loop now persists the workflow and demand, routes typed messages through all four
 specialists, and applies every transport callback through a strict LangGraph transition reducer.
 Human plan selection, PO approval, exception decisions, and counterproposal approval are validated
-against the current persisted target/version. Outbound specialist messages are recorded before
-delivery and updated afterward; duplicate inbound message IDs are ignored. Exact 855 results
+against the current persisted target/version. Outbound specialist messages and their typed payloads
+are recorded before delivery and updated afterward; pending messages are replayed with the same IDs
+after restart, and duplicate inbound message IDs are ignored. Exact 855 results
 complete the conversation, while conflicts expose accept, counter, switch/re-source,
 split/re-source, or cancel actions. The counter path routes the 860/865 exchange back through the
-Acknowledgment Agent. Live Agentverse/ASI:One rendering remains a deployment verification item.
+Acknowledgment Agent. Completion emits an Agent Activity card built from persisted message and
+transition evidence. Live Agentverse/ASI:One rendering remains a deployment verification item.
 
 Live deployment checklist:
 
@@ -220,6 +228,10 @@ The local e2e suite exercises both an exact-acknowledgment version and a price-c
 that reaches an accepted counterproposal. It does not substitute for the required live ASI:One
 conversation.
 
+Deterministic example documents are in [docs/samples](docs/samples/README.md). Operational startup,
+recovery, rollback, and incident procedures are in the
+[operations runbook](docs/operations-runbook.md).
+
 ## X12 scope
 
 This is an educational hackathon subset, **not a certified production EDI translator**. It
@@ -235,14 +247,20 @@ coverage are non-goals.
 - Approved POs, outbound EDI, and supplier-transaction intent are committed before external
   commands; a durable journal commits `PENDING` before and `SUCCEEDED` after each command.
 - Accepted supplier transaction IDs and polling destinations survive restart. The Procurement
-  Agent periodically reconciles `SUBMITTING`/`PROCESSING` rows, reuses the idempotency journal, and
-  forwards stable-ID 855/865 results without duplicating the supplier submission.
+  Agent periodically reconciles `SUBMITTING`/`PROCESSING` rows under expiring leases, reuses the
+  idempotency journal, and persists `READY_TO_DELIVER` before forwarding stable-ID 855/865 results
+  without duplicating the supplier submission.
+- Generic specialist messages use a database-backed outbox: payload and pending state are committed
+  before send, and restart recovery replays the same message ID.
+- Inventory reservations transition idempotently from `TENTATIVE` to `COMMITTED` or `RELEASED` as
+  the workflow completes or is cancelled.
 - Raw and parsed 850/855/860/865 documents, acknowledgment lines, discrepancies, change orders,
   message delivery status, workflow transitions, and human approvals are persisted as evidence.
 - Retries are bounded and limited to safe/idempotent calls; sourcing can continue at its quote
   threshold and never invents a plan.
 - Duplicate/stale acknowledgments quarantine; invalid EDI becomes recoverable workflow state.
 - Raw credentials, seeds, authorization headers, and internal stack traces are never card/log data.
+- CI scans tracked and non-ignored untracked files for populated secret variables and private keys.
 - Supplier URLs come from configuration; inbound bodies are Pydantic-validated.
 - Sentry is optional and fails open. Structured local logging remains available.
 

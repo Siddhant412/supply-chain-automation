@@ -199,3 +199,30 @@ async def test_price_conflict_human_counterproposal_and_accepted_865() -> None:
     parsed = parse_865(response.x12 or "")
     assert parsed.po_version == 2
     assert parsed.lines[0].response_code == "IA"
+
+
+@pytest.mark.asyncio
+async def test_real_supplier_boundary_all_failures_pause_without_inventing_quotes() -> None:
+    app = create_app(api_key="api", admin_api_key="admin")
+    await set_scenario(app, "supplier_unavailable")
+    client = SupplierClient(
+        base_url="http://test",
+        api_key="api",
+        transport=httpx.ASGITransport(app=app),
+        max_retries=0,
+    )
+    request = SourcingRequest(
+        correlation_id=uuid4(),
+        workflow_id=uuid4(),
+        sender_agent="orchestrator",
+        shortages={"ENGINE-001": 75},
+        required_by={"ENGINE-001": "2026-12-01"},
+    )
+    sourcing = SourcingAgentService(
+        client,
+        ("supplier-alpha", "supplier-beta", "supplier-gamma"),
+        minimum_valid_quotes=2,
+    )
+
+    with pytest.raises(RuntimeError, match="only 0 valid supplier quotes"):
+        await sourcing.collect(request, now=datetime(2026, 10, 16, tzinfo=UTC))

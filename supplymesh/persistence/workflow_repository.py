@@ -34,6 +34,15 @@ class WorkflowSnapshot:
     state: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class PendingOutbound:
+    workflow_id: UUID
+    message_id: UUID
+    destination: str
+    message_type: str
+    payload_json: str
+
+
 class WorkflowRepository:
     def __init__(
         self,
@@ -154,6 +163,7 @@ class WorkflowRepository:
         destination: str,
         message_type: str,
         status: str,
+        payload_json: str | None = None,
     ) -> None:
         with self.session_factory() as session, session.begin():
             record = session.get(WorkflowRun, workflow_id, with_for_update=True)
@@ -166,14 +176,40 @@ class WorkflowRepository:
                 current["destination"] != destination or current["message_type"] != message_type
             ):
                 raise ValueError("message ID is already bound to a different outbound message")
+            if (
+                current is not None
+                and payload_json is not None
+                and current.get("payload_json") not in {None, payload_json}
+            ):
+                raise ValueError("message ID is already bound to a different outbound payload")
             outbound[str(message_id)] = {
                 "destination": destination,
                 "message_type": message_type,
                 "status": status,
+                "payload_json": payload_json or (current or {}).get("payload_json"),
             }
             state["outbound_messages"] = outbound
             record.state = state
             record.checkpoint_version += 1
+
+    def pending_outbound(self) -> tuple[PendingOutbound, ...]:
+        with self.session_factory() as session:
+            records = tuple(session.scalars(select(WorkflowRun).order_by(WorkflowRun.started_at)))
+            pending: list[PendingOutbound] = []
+            for record in records:
+                for message_id, value in record.state.get("outbound_messages", {}).items():
+                    if value.get("status") != "PENDING" or not value.get("payload_json"):
+                        continue
+                    pending.append(
+                        PendingOutbound(
+                            workflow_id=record.id,
+                            message_id=UUID(message_id),
+                            destination=str(value["destination"]),
+                            message_type=str(value["message_type"]),
+                            payload_json=str(value["payload_json"]),
+                        )
+                    )
+            return tuple(pending)
 
     def save_approval(
         self,
@@ -244,26 +280,56 @@ class WorkflowRepository:
         return approval
 
     def record_inventory_result(self, workflow_id: UUID, result: dict[str, Any]) -> None:
+        before: dict[str, Any] | None = None
+        after: dict[str, Any] | None = None
         with self.session_factory() as session, session.begin():
             record = session.get(WorkflowRun, workflow_id)
             if record is None:
                 raise ValueError("inventory result references an unknown workflow")
             state = dict(record.state)
+            before = {"status": record.status, "state": state}
             state["inventory_result"] = result
             record.state = state
             record.status = "SOURCING" if result["has_shortages"] else "COMPLETED"
             record.checkpoint_version += 1
+            after = {"status": record.status, "state": state}
+        if self.audit is not None:
+            self.audit.append_event(
+                workflow_id=workflow_id,
+                actor_type="AGENT",
+                actor_id="inventory-and-bom",
+                action="INVENTORY_RESULT_RECORDED",
+                entity_type="workflow",
+                entity_id=str(workflow_id),
+                before=before,
+                after=after,
+            )
 
     def record_failure(self, workflow_id: UUID, error: dict[str, Any]) -> None:
+        before: dict[str, Any] | None = None
+        after: dict[str, Any] | None = None
         with self.session_factory() as session, session.begin():
             record = session.get(WorkflowRun, workflow_id)
             if record is None:
                 return
             state = dict(record.state)
+            before = {"status": record.status, "state": state}
             state["error"] = error
             record.state = state
             record.status = "FAILED_REQUIRES_OPERATOR"
             record.checkpoint_version += 1
+            after = {"status": record.status, "state": state}
+        if self.audit is not None:
+            self.audit.append_event(
+                workflow_id=workflow_id,
+                actor_type="SYSTEM",
+                actor_id="manufacturing-orchestrator",
+                action="WORKFLOW_FAILED",
+                entity_type="workflow",
+                entity_id=str(workflow_id),
+                before=before,
+                after=after,
+            )
 
     @staticmethod
     def _state(session_state: ConnectivitySession) -> dict[str, str]:

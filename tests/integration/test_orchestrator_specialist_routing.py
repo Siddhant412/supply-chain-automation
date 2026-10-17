@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from uagents import Model, Protocol
-from uagents_core.contrib.protocols.chat import ChatMessage, TextContent
+from uagents_core.contrib.protocols.chat import ChatMessage, MetadataContent, TextContent
 
 from supplymesh.agents.orchestration import (
     OrchestrationCoordinator,
@@ -49,7 +49,11 @@ from supplymesh.protocols.procurement import (
     ChangeResponseReceived,
     PurchaseOrderSubmitted,
 )
-from supplymesh.protocols.sourcing import ProcurementPlansReady, SupplierQuotesCollected
+from supplymesh.protocols.sourcing import (
+    ProcurementPlansReady,
+    SourcingRequest,
+    SupplierQuotesCollected,
+)
 from supplymesh.services.order_factory import purchase_orders_from_plan
 from supplymesh.workflows.procurement_graph import build_event_transition_graph
 
@@ -66,6 +70,22 @@ class Context:
 
 class Requests:
     pass
+
+
+class ActivityAudit:
+    def log_message(self, **values: object) -> None:
+        del values
+
+    def list_activity(self, workflow_id: object) -> list[dict[str, str]]:
+        del workflow_id
+        return [
+            {
+                "kind": "message",
+                "agent": "inventory-and-bom",
+                "action": "InventoryShortageReport",
+                "outcome": "RECEIVED",
+            }
+        ]
 
 
 def handler(protocol: Protocol, model: type[Model]) -> Any:
@@ -129,6 +149,7 @@ async def test_orchestrator_routes_all_specialists_and_completes_exact_ack() -> 
         procurement_address="agent1procurement",
         acknowledgment_address="agent1ack",
         transition_graph=build_event_transition_graph(),
+        audit=ActivityAudit(),  # type: ignore[arg-type]
     )
     specialist_protocol = build_specialist_response_protocol(coordinator)
     planning_protocol = build_planning_response_protocol(coordinator)
@@ -331,6 +352,16 @@ async def test_orchestrator_routes_all_specialists_and_completes_exact_ack() -> 
         destination == "agent1manager" and isinstance(message, ChatMessage)
         for destination, message in completion_context.sent
     )
+    activity_cards = [
+        json.loads(content.metadata["card_payload"])
+        for _, message in completion_context.sent
+        if isinstance(message, ChatMessage)
+        for content in message.content
+        if isinstance(content, MetadataContent)
+        and content.metadata.get("card_kind") == "custom"
+        and json.loads(content.metadata["card_payload"]).get("title") == "Agent activity"
+    ]
+    assert activity_cards[0]["activities"][0]["agent"] == "inventory-and-bom"
     assert all(
         item["status"] == "DELIVERED" for item in completed.state["outbound_messages"].values()
     )
@@ -495,4 +526,55 @@ async def test_conflict_counterproposal_routes_860_and_865_back_to_completion() 
     completed = store.snapshot(workflow_id)
     assert completed is not None
     assert completed.status == "COMPLETED"
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_replays_durable_pending_outbound_with_stable_identity() -> None:
+    engine, store, _ = repository()
+    workflow_id = uuid4()
+    correlation_id = uuid4()
+    store.start_inventory(
+        ConnectivitySession(
+            workflow_id=workflow_id,
+            conversation_id="agent1manager",
+            correlation_id=correlation_id,
+            request_message_id=uuid4(),
+            chat_message_id=uuid4(),
+            status="SOURCING",
+        )
+    )
+    request = SourcingRequest(
+        correlation_id=correlation_id,
+        workflow_id=workflow_id,
+        sender_agent="manufacturing-orchestrator",
+        shortages={"ENGINE-001": 55},
+        required_by={"ENGINE-001": "2026-12-01"},
+    )
+    store.record_outbound(
+        workflow_id,
+        message_id=request.message_id,
+        destination="agent1sourcing",
+        message_type=request.message_type,
+        status="PENDING",
+        payload_json=request.model_dump_json(),
+    )
+    coordinator = OrchestrationCoordinator(
+        inventory_address="agent1inventory",
+        requests=Requests(),  # type: ignore[arg-type]
+        workflows=store,
+        sourcing_address="agent1sourcing",
+        transition_graph=build_event_transition_graph(),
+    )
+    protocol = build_specialist_response_protocol(coordinator, recovery_interval_seconds=0.01)
+    interval_handler, interval_seconds = protocol.intervals[0]
+    context = Context()
+
+    await interval_handler(context)
+
+    assert interval_seconds == 0.01
+    assert context.sent[0][0] == "agent1sourcing"
+    assert isinstance(context.sent[0][1], SourcingRequestTransport)
+    assert context.sent[0][1].to_domain().message_id == request.message_id
+    assert store.pending_outbound() == ()
     engine.dispose()

@@ -88,10 +88,12 @@ class FetchConnectivityCoordinator:
                 currency=intake.currency,
             )
         )
+        self._record_inventory_delivery(request, "PENDING")
         delivery = await ctx.send(
             self.inventory_address, DemandPlanningTransport.from_domain(request)
         )
         if getattr(delivery, "status", None) == DeliveryStatus.FAILED:
+            self._record_inventory_delivery(request, "FAILED")
             error = {
                 "code": "INVENTORY_AGENT_UNREACHABLE",
                 "message": "The Inventory Agent could not be reached.",
@@ -99,6 +101,7 @@ class FetchConnectivityCoordinator:
             }
             self.workflows.record_failure(workflow_id, error)
             raise ConnectivityError(error["message"])
+        self._record_inventory_delivery(request, "DELIVERED")
         return request
 
     async def complete_inventory(
@@ -174,6 +177,9 @@ class FetchConnectivityCoordinator:
         if report.reply_to != str(session.request_message_id):
             raise ValueError("inventory report does not answer the pending planning request")
         return session
+
+    def _record_inventory_delivery(self, request: DemandPlanningRequest, status: str) -> None:
+        del request, status
 
 
 class ConnectivityError(RuntimeError):
