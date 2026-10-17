@@ -1,4 +1,5 @@
 from typing import Protocol
+from uuid import UUID
 
 from pydantic import ValidationError
 from uagents import Context
@@ -11,8 +12,9 @@ from supplymesh.agents.transport import (
     SpecialistFailureTransport,
     WorkflowStatusResponseTransport,
 )
+from supplymesh.domain.exceptions import AcknowledgmentComparison
 from supplymesh.domain.procurement import PurchaseOrder
-from supplymesh.edi.x12_855 import parse_855
+from supplymesh.edi.x12_855 import Parsed855, parse_855
 from supplymesh.edi.x12_865 import parse_865
 from supplymesh.protocols.common import WorkflowStatusResponse
 from supplymesh.protocols.exceptions import AcknowledgmentComparisonResult
@@ -24,11 +26,28 @@ class PurchaseOrderLookup(Protocol):
     def get_purchase_order(self, po_id: str) -> PurchaseOrder: ...
 
 
+class AcknowledgmentEvidence(Protocol):
+    def record_acknowledgment_comparison(
+        self,
+        *,
+        po: PurchaseOrder,
+        parsed: Parsed855,
+        comparison: AcknowledgmentComparison,
+    ) -> UUID: ...
+
+    def record_change_result(self, po_id: UUID, version: int, *, accepted: bool) -> None: ...
+
+
 class AcknowledgmentAgentService:
     name = "acknowledgment-and-exception"
 
-    def __init__(self, purchase_orders: PurchaseOrderLookup) -> None:
+    def __init__(
+        self,
+        purchase_orders: PurchaseOrderLookup,
+        evidence: AcknowledgmentEvidence | None = None,
+    ) -> None:
         self.purchase_orders = purchase_orders
+        self.evidence = evidence
 
     def compare(self, message: AcknowledgmentReceived) -> AcknowledgmentComparisonResult:
         po = self.purchase_orders.get_purchase_order(message.po_id)
@@ -38,6 +57,12 @@ class AcknowledgmentAgentService:
         if parsed.po_number != po.po_number:
             raise ValueError("acknowledgment PO number does not match the stored purchase order")
         comparison = compare_acknowledgment(po, parsed)
+        if self.evidence is not None:
+            self.evidence.record_acknowledgment_comparison(
+                po=po,
+                parsed=parsed,
+                comparison=comparison,
+            )
         return AcknowledgmentComparisonResult(
             correlation_id=message.correlation_id,
             workflow_id=message.workflow_id,
@@ -59,6 +84,12 @@ class AcknowledgmentAgentService:
             line.line_number for line in parsed.lines if line.response_code != "IA"
         )
         accepted = bool(parsed.lines) and not rejected_lines
+        if self.evidence is not None:
+            self.evidence.record_change_result(
+                po.po_id,
+                message.po_version,
+                accepted=accepted,
+            )
         return WorkflowStatusResponse(
             correlation_id=message.correlation_id,
             workflow_id=message.workflow_id,

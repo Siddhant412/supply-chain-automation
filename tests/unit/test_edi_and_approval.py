@@ -98,3 +98,22 @@ def test_approval_hash_rejects_stale_or_modified_purchase_order() -> None:
             target_version=1,
             current_payload=changed,
         )
+
+
+def test_approval_hash_treats_equivalent_decimal_scales_as_equal() -> None:
+    po = purchase_order()
+    scaled = po.model_copy(
+        update={
+            "lines": (
+                po.lines[0].model_copy(
+                    update={
+                        "quantity": Decimal("75.000000"),
+                        "unit_price": Decimal("820.0000"),
+                    }
+                ),
+            ),
+            "total": Decimal("61500.00"),
+        }
+    )
+
+    assert approval_payload_hash(po) == approval_payload_hash(scaled)

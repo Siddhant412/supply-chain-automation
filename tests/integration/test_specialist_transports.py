@@ -1,8 +1,8 @@
 import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any
-from uuid import uuid4
+from typing import Any, Literal
+from uuid import UUID, uuid4
 
 import pytest
 from uagents import Model, Protocol
@@ -277,6 +277,82 @@ class ProcurementState:
         del po, external_transaction_id, poll_url
         self.events.append("persist_submission")
 
+    def record_purchase_order_intent(
+        self,
+        po: PurchaseOrder,
+        *,
+        correlation_id: UUID,
+        request_message_id: UUID,
+        response_message_id: UUID,
+        approval_id: UUID,
+        reply_address: str,
+    ) -> None:
+        del (
+            po,
+            correlation_id,
+            request_message_id,
+            response_message_id,
+            approval_id,
+            reply_address,
+        )
+        self.events.append("persist_po_intent")
+
+    def record_change_order_intent(
+        self,
+        counterproposal: Counterproposal,
+        *,
+        correlation_id: UUID,
+        request_message_id: UUID,
+        response_message_id: UUID,
+        approval_id: UUID,
+        reply_address: str,
+    ) -> None:
+        del (
+            counterproposal,
+            correlation_id,
+            request_message_id,
+            response_message_id,
+            approval_id,
+            reply_address,
+        )
+        self.events.append("persist_change_intent")
+
+    def record_change_submission(
+        self,
+        counterproposal: Counterproposal,
+        *,
+        external_transaction_id: str,
+        poll_url: str,
+    ) -> None:
+        del counterproposal, external_transaction_id, poll_url
+        self.events.append("persist_change_submission")
+
+    def mark_transaction_acknowledged(self, supplier_id: str, idempotency_key: str) -> None:
+        del supplier_id, idempotency_key
+        self.events.append("persist_acknowledged")
+
+    def pending_transactions(self) -> tuple[object, ...]:
+        return ()
+
+    def record_edi_document(
+        self,
+        *,
+        workflow_id: UUID,
+        supplier_id: str,
+        document_type: Literal["850", "855", "860", "865"],
+        direction: Literal["OUTBOUND", "INBOUND"],
+        raw_text: str,
+        related_document_id: UUID,
+    ) -> UUID:
+        del workflow_id, supplier_id, direction, raw_text
+        self.events.append(f"persist_{document_type}")
+        return related_document_id
+
+    def record_change_order(self, counterproposal: Counterproposal, *, approval_id: UUID) -> UUID:
+        del approval_id
+        self.events.append("persist_change")
+        return counterproposal.po_id
+
 
 def purchase_order() -> PurchaseOrder:
     return PurchaseOrder(
@@ -347,10 +423,14 @@ async def test_procurement_transport_persists_executes_and_forwards_855() -> Non
     assert acknowledgment.reply_to == str(context.sent[0][1].to_domain().message_id)
     assert events == [
         "persist_po",
+        "persist_850",
+        "persist_po_intent",
         "journal_pending",
         "external_po",
         "journal_success",
         "persist_submission",
+        "persist_855",
+        "persist_acknowledged",
     ]
 
 
@@ -400,7 +480,17 @@ async def test_procurement_transport_executes_approved_counterproposal_and_forwa
     assert isinstance(context.sent[0][1], ChangeOrderSubmittedTransport)
     assert isinstance(context.sent[1][1], ChangeResponseReceivedTransport)
     assert context.sent[1][1].to_domain().po_version == 2
-    assert events == ["journal_pending", "external_change", "journal_success"]
+    assert events == [
+        "persist_change",
+        "persist_860",
+        "persist_change_intent",
+        "journal_pending",
+        "external_change",
+        "journal_success",
+        "persist_change_submission",
+        "persist_865",
+        "persist_acknowledged",
+    ]
 
 
 class PurchaseOrders:

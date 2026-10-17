@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from hashlib import sha256
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid5
 
@@ -43,6 +44,7 @@ from supplymesh.domain.procurement import (
     PurchaseOrder,
 )
 from supplymesh.domain.sourcing import ProcurementPlan
+from supplymesh.persistence.audit_repository import AuditRepository
 from supplymesh.persistence.workflow_repository import WorkflowSnapshot
 from supplymesh.protocols.common import WorkflowStatusResponse
 from supplymesh.protocols.exceptions import AcknowledgmentComparisonResult
@@ -110,6 +112,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
     procurement_address: str = ""
     acknowledgment_address: str = ""
     transition_graph: Any | None = None
+    audit: AuditRepository | None = None
 
     @property
     def routing_store(self) -> OrchestrationStore:
@@ -119,6 +122,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
         self, ctx: MessageContext, report: InventoryShortageReport
     ) -> None:
         session = self._validated_session(report)
+        self._audit_received(report)
         assessment = report.assessment
         snapshot = self._snapshot(report.workflow_id)
         event = "inventory_shortage" if assessment.has_shortages else "inventory_sufficient"
@@ -154,6 +158,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
             await self._send_completion(ctx, self._snapshot(report.workflow_id))
 
     async def handle_quotes(self, ctx: MessageContext, collected: SupplierQuotesCollected) -> None:
+        self._audit_received(collected)
         snapshot = self._validated_reply(
             collected.workflow_id,
             collected.correlation_id,
@@ -172,6 +177,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
         del ctx, snapshot
 
     async def handle_plans(self, ctx: MessageContext, ready: ProcurementPlansReady) -> None:
+        self._audit_received(ready)
         snapshot = self._snapshot(ready.workflow_id)
         if self._already_processed(snapshot, ready.message_id):
             return
@@ -242,6 +248,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
     async def handle_po_submitted(
         self, ctx: MessageContext, submitted: PurchaseOrderSubmitted
     ) -> None:
+        self._audit_received(submitted)
         snapshot = self._validated_reply(
             submitted.workflow_id,
             submitted.correlation_id,
@@ -264,6 +271,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
     async def handle_acknowledgment(
         self, ctx: MessageContext, acknowledgment: AcknowledgmentReceived
     ) -> None:
+        self._audit_received(acknowledgment)
         snapshot = self._snapshot(acknowledgment.workflow_id)
         self._validate_correlation(snapshot, acknowledgment.correlation_id)
         submission_data = snapshot.state.get("po_submissions", {}).get(acknowledgment.po_id)
@@ -293,6 +301,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
     async def handle_change_submitted(
         self, ctx: MessageContext, submitted: ChangeOrderSubmitted
     ) -> None:
+        self._audit_received(submitted)
         snapshot = self._validated_reply(
             submitted.workflow_id,
             submitted.correlation_id,
@@ -313,6 +322,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
     async def handle_change_response(
         self, ctx: MessageContext, response: ChangeResponseReceived
     ) -> None:
+        self._audit_received(response)
         snapshot = self._snapshot(response.workflow_id)
         self._validate_correlation(snapshot, response.correlation_id)
         submission_data = snapshot.state.get("change_submission")
@@ -340,6 +350,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
     async def handle_change_status(
         self, ctx: MessageContext, result: WorkflowStatusResponse
     ) -> None:
+        self._audit_received(result)
         snapshot = self._snapshot(result.workflow_id)
         if self._already_processed(snapshot, result.message_id):
             return
@@ -374,6 +385,7 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
     async def handle_comparison(
         self, ctx: MessageContext, result: AcknowledgmentComparisonResult
     ) -> None:
+        self._audit_received(result)
         snapshot = self._snapshot(result.workflow_id)
         if self._already_processed(snapshot, result.message_id):
             return
@@ -799,6 +811,9 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
         message_id: UUID,
         message_type: str,
     ) -> None:
+        sent_at = datetime.now(UTC)
+        payload_json = getattr(wire, "payload_json", repr(wire))
+        payload_hash = sha256(str(payload_json).encode()).hexdigest()
         self.routing_store.record_outbound(
             snapshot.workflow_id,
             message_id=message_id,
@@ -806,6 +821,17 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
             message_type=message_type,
             status="PENDING",
         )
+        if self.audit is not None:
+            self.audit.log_message(
+                workflow_id=snapshot.workflow_id,
+                message_id=message_id,
+                sender="manufacturing-orchestrator",
+                recipient=destination,
+                message_type=message_type,
+                payload_hash=payload_hash,
+                status="PENDING",
+                sent_at=sent_at,
+            )
         try:
             delivery = await ctx.send(destination, wire)
             failed = getattr(delivery, "status", None) == DeliveryStatus.FAILED
@@ -818,6 +844,18 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
             message_type=message_type,
             status="FAILED" if failed else "DELIVERED",
         )
+        if self.audit is not None:
+            self.audit.log_message(
+                workflow_id=snapshot.workflow_id,
+                message_id=message_id,
+                sender="manufacturing-orchestrator",
+                recipient=destination,
+                message_type=message_type,
+                payload_hash=payload_hash,
+                status="FAILED" if failed else "DELIVERED",
+                sent_at=sent_at,
+                received_at=datetime.now(UTC),
+            )
         if failed:
             await self._fail(
                 ctx,
@@ -844,6 +882,27 @@ class OrchestrationCoordinator(FetchConnectivityCoordinator):
         if snapshot is None:
             raise ValueError("message references an unknown workflow")
         return snapshot
+
+    def _audit_received(self, message: BaseModel) -> None:
+        if self.audit is None:
+            return
+        message_id = getattr(message, "message_id", None)
+        workflow_id = getattr(message, "workflow_id", None)
+        sender = getattr(message, "sender_agent", None)
+        if not isinstance(message_id, UUID) or not isinstance(workflow_id, UUID) or not sender:
+            return
+        observed_at = datetime.now(UTC)
+        self.audit.log_message(
+            workflow_id=workflow_id,
+            message_id=message_id,
+            sender=str(sender),
+            recipient="manufacturing-orchestrator",
+            message_type=str(getattr(message, "message_type", type(message).__name__)),
+            payload_hash=sha256(message.model_dump_json().encode()).hexdigest(),
+            status="RECEIVED",
+            sent_at=getattr(message, "sent_at", observed_at),
+            received_at=observed_at,
+        )
 
     def _validated_reply(
         self,

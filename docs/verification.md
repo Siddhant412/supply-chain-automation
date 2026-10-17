@@ -10,9 +10,10 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [x] Ruff formatting and linting: `uv run ruff format --check . && uv run ruff check .`
 - [x] Strict typing for 43 agent/domain/persistence/protocol/service source files:
   `uv run --python 3.11 --isolated mypy`.
-- [x] Automated suite: 59 passed with `uv run pytest -q`.
-- [x] Full `supplymesh` plus `apps` source coverage: 87% (`pytest-cov`).
-- [x] PostgreSQL migrations `0001`–`0005` apply to a clean PostgreSQL 17 database.
+- [x] Automated suite: 64 passed with `uv run pytest -q --cov=supplymesh --cov=apps`.
+- [x] Full `supplymesh` plus `apps` source coverage: 88% (`pytest-cov`).
+- [x] PostgreSQL migrations `0001`–`0006` upgrade, downgrade to base, and re-upgrade on a clean
+  PostgreSQL 17 database.
 - [x] Alembic reports no SupplyMesh schema drift after LangGraph checkpoint setup.
 - [x] PostgreSQL checkpoint restart: pause, close graph/saver, reopen/resume twice, complete.
 - [x] PostgreSQL side-effect journal: pending and success survive independent sessions.
@@ -35,6 +36,11 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [x] Human-approved X12 860 and accepted 865 loop is tested end to end.
 - [x] Duplicate PO calls return the original supplier transaction.
 - [x] Workflow resumes from PostgreSQL after graph/checkpointer reconstruction.
+- [x] File-backed restart tests close the database after supplier acceptance but before local
+  submission state is recorded, then reconstruct the Procurement Agent and finish 850/855 and
+  860/865 exactly once without a duplicate supplier submission.
+- [x] Raw and parsed EDI, acknowledgment lines, discrepancies, and change-order outcomes are
+  persisted idempotently as structured procurement evidence.
 
 ## Agentic and Fetch.ai
 
@@ -69,8 +75,10 @@ and human interaction in those products. No credentials or URLs were present in 
 - [x] Timeout/retry/partial-result behavior and controlled first-call recovery are tested.
 - [x] Approval/PO versions, correlation IDs, stable keys, and stale decisions are validated.
 - [x] External PO/change-order side effects use pre/post durable journal records.
-- [x] Append-only agent-message and material state-transition audit repositories persist to
-  PostgreSQL; message IDs are unique for deduplication.
+- [x] PO/change-order intent is persisted before the supplier call; incomplete `SUBMITTING` and
+  `PROCESSING` transactions are reconciled by the Procurement Agent's recovery interval.
+- [x] Durable agent-message delivery status and append-only material state-transition audit events
+  persist to PostgreSQL; message IDs are unique for deduplication.
 - [x] Failures produce bounded public errors without raw stack traces.
 - [x] FX has PostgreSQL cache and non-expired fallback semantics.
 - [x] Live Frankfurter v2 lookup returned EUR/USD `1.122` dated 2026-10-16; automated tests cover

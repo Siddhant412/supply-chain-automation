@@ -191,6 +191,16 @@ class SupplierTransactionRecord(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(index=True)
+    po_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("purchase_orders.id", ondelete="CASCADE"), index=True
+    )
+    po_version: Mapped[int | None] = mapped_column(Integer)
+    correlation_id: Mapped[uuid.UUID | None]
+    request_message_id: Mapped[uuid.UUID | None]
+    response_message_id: Mapped[uuid.UUID | None]
+    approval_id: Mapped[uuid.UUID | None]
+    reply_address: Mapped[str | None] = mapped_column(String(255))
     supplier_id: Mapped[str] = mapped_column(String(100))
     transaction_type: Mapped[str] = mapped_column(String(32))
     idempotency_key: Mapped[str] = mapped_column(String(64))
@@ -199,6 +209,79 @@ class SupplierTransactionRecord(Base):
     poll_url: Mapped[str | None] = mapped_column(String(1000))
     next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AcknowledgmentRecord(Base):
+    __tablename__ = "acknowledgments"
+    __table_args__ = (UniqueConstraint("po_id", "po_version", "supplier_ack_ref"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    po_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("purchase_orders.id", ondelete="CASCADE"), index=True
+    )
+    po_version: Mapped[int] = mapped_column(Integer)
+    supplier_ack_ref: Mapped[str] = mapped_column(String(100))
+    acknowledgment_type: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AcknowledgmentLineRecord(Base):
+    __tablename__ = "acknowledgment_lines"
+    __table_args__ = (UniqueConstraint("acknowledgment_id", "po_line_number"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    acknowledgment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("acknowledgments.id", ondelete="CASCADE"), index=True
+    )
+    po_line_number: Mapped[int] = mapped_column(Integer)
+    status_code: Mapped[str] = mapped_column(String(16))
+    accepted_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    promised_date: Mapped[date] = mapped_column(Date)
+    notes: Mapped[str | None] = mapped_column(String(1000))
+
+
+class ExceptionRecord(Base):
+    __tablename__ = "exceptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    workflow_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    po_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("purchase_orders.id", ondelete="CASCADE"), index=True
+    )
+    acknowledgment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("acknowledgments.id", ondelete="CASCADE"), index=True
+    )
+    severity: Mapped[str] = mapped_column(String(32))
+    category: Mapped[str] = mapped_column(String(64))
+    expected_value: Mapped[str | None] = mapped_column(String(1000))
+    actual_value: Mapped[str | None] = mapped_column(String(1000))
+    cost_impact: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    schedule_impact_days: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChangeOrderRecord(Base):
+    __tablename__ = "change_orders"
+    __table_args__ = (UniqueConstraint("po_id", "version"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    po_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("purchase_orders.id", ondelete="CASCADE"), index=True
+    )
+    workflow_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(String(1000))
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    approval_id: Mapped[uuid.UUID]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from supplymesh.domain.procurement import ApprovalRecord
+from supplymesh.persistence.audit_repository import AuditRepository
 from supplymesh.persistence.orm_models import ApprovalDecisionRecord, WorkflowRun
 from supplymesh.services.approval_service import approval_payload_hash
 
@@ -34,8 +35,13 @@ class WorkflowSnapshot:
 
 
 class WorkflowRepository:
-    def __init__(self, session_factory: Callable[[], Session]) -> None:
+    def __init__(
+        self,
+        session_factory: Callable[[], Session],
+        audit: AuditRepository | None = None,
+    ) -> None:
         self.session_factory = session_factory
+        self.audit = audit
 
     def start_inventory(self, session_state: ConnectivitySession) -> None:
         with self.session_factory() as session, session.begin():
@@ -47,6 +53,17 @@ class WorkflowRepository:
                     checkpoint_version=1,
                     state=self._state(session_state),
                 )
+            )
+        if self.audit is not None:
+            self.audit.append_event(
+                workflow_id=session_state.workflow_id,
+                actor_type="AGENT",
+                actor_id="manufacturing-orchestrator",
+                action="WORKFLOW_STARTED",
+                entity_type="workflow",
+                entity_id=str(session_state.workflow_id),
+                before=None,
+                after={"status": session_state.status},
             )
 
     def get(self, workflow_id: UUID) -> ConnectivitySession | None:
@@ -93,6 +110,8 @@ class WorkflowRepository:
         inbound_message_id: UUID | None = None,
     ) -> bool:
         """Atomically deduplicate an inbound message and persist its resulting state."""
+        before: dict[str, Any] | None = None
+        after: dict[str, Any] | None = None
         with self.session_factory() as session, session.begin():
             record = session.get(WorkflowRun, workflow_id, with_for_update=True)
             if record is None:
@@ -101,6 +120,7 @@ class WorkflowRepository:
             processed = list(state.get("processed_message_ids", []))
             if inbound_message_id is not None and str(inbound_message_id) in processed:
                 return False
+            before = {"status": record.status, "state": state}
             if inbound_message_id is not None:
                 processed.append(str(inbound_message_id))
                 state["processed_message_ids"] = processed
@@ -112,7 +132,19 @@ class WorkflowRepository:
                 if status in {"COMPLETED", "CANCELLED", "FAILED_REQUIRES_OPERATOR"}:
                     record.completed_at = datetime.now(UTC)
             record.checkpoint_version += 1
-            return True
+            after = {"status": record.status, "state": state}
+        if self.audit is not None:
+            self.audit.append_event(
+                workflow_id=workflow_id,
+                actor_type="AGENT",
+                actor_id="manufacturing-orchestrator",
+                action="WORKFLOW_UPDATED",
+                entity_type="workflow",
+                entity_id=str(workflow_id),
+                before=before,
+                after=after,
+            )
+        return True
 
     def record_outbound(
         self,
@@ -193,6 +225,22 @@ class WorkflowRepository:
                         decided_at=approval.decided_at,
                     )
                 )
+        if self.audit is not None:
+            self.audit.append_event(
+                workflow_id=workflow_id,
+                actor_type="HUMAN",
+                actor_id=actor,
+                action=decision_type,
+                entity_type=target_type,
+                entity_id=target_id,
+                before=None,
+                after={
+                    "approval_id": str(approval.approval_id),
+                    "target_version": target_version,
+                    "decision": approval.decision,
+                    "payload_hash": payload_hash,
+                },
+            )
         return approval
 
     def record_inventory_result(self, workflow_id: UUID, result: dict[str, Any]) -> None:

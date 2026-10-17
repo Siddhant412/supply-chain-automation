@@ -56,12 +56,15 @@ Each identity requires its own environment-only seed. The host rejects missing o
 4. Request quotes concurrently from three configuration-driven supplier routes.
 5. Produce cheapest, fastest, balanced, risk-aware, and split plans with OR-Tools.
 6. Pause for plan approval, then pause separately before sending purchase orders.
-7. Persist a pending side-effect record, send idempotent X12 850 POs, and persist the result.
-8. Poll for X12 855 acknowledgments and compare every line deterministically.
+7. Persist the approved PO, raw X12 850, and supplier-transaction intent before sending; journal
+   the idempotent supplier side effect before and after the call.
+8. Persist accepted supplier transaction IDs, poll for X12 855 acknowledgments, and compare every
+   line deterministically. A restarted Procurement Agent resumes incomplete 850/855 polling from
+   the database without submitting the PO again.
 9. Complete exact matches. For material differences, pause for accept, counter, switch, split,
    or cancel.
-10. A human-approved counterproposal follows the same durable side-effect sequence for X12 860
-    and processes the supplier's X12 865 response.
+10. A human-approved counterproposal follows the same durable intent/journal/recovery sequence for
+    X12 860 and persists the supplier's X12 865 response.
 
 LangGraph checkpoints live in PostgreSQL. A verified restart test closes and reconstructs the
 graph/checkpointer at both approval pauses before completing the same workflow thread.
@@ -128,7 +131,9 @@ Do not commit `.env`, private keys, seed files, or Agentverse state. The `.gitig
 
 ## Database and seed data
 
-Alembic owns SupplyMesh tables. LangGraph owns its `checkpoint*` tables through
+Alembic owns SupplyMesh tables, including raw/parsed EDI documents, acknowledgment lines,
+exceptions, change orders, and restart metadata for supplier transactions. LangGraph owns its
+`checkpoint*` tables through
 `PostgresSaver.setup()`; Alembic intentionally excludes only those framework-owned tables from
 drift checks. Migrations and checkpoint setup are both included in `make migrate`.
 
@@ -148,7 +153,8 @@ DATABASE_URL=postgresql+psycopg://... uv run alembic check
 
 The suite contains unit, supplier-contract, workflow, and local end-to-end tests. It covers exact
 and conflicting acknowledgments, duplicate external calls, partial suppliers, all-supplier
-failure, stale approvals, FX fallback, controlled recovery, and PostgreSQL checkpoint resumption.
+failure, stale approvals, FX fallback, controlled recovery, PostgreSQL checkpoint resumption, and
+file-backed process-restart recovery after supplier acceptance for both 850/855 and 860/865.
 The Fetch integration tests drive the card conversation through registered protocol handlers from
 demand intake to Inventory, Sourcing, Procurement, Acknowledgment, and final completion. They
 verify strict wire serialization/correlation, durable message deduplication, separate plan/PO/change
@@ -226,7 +232,13 @@ coverage are non-goals.
 
 - Approval records bind target ID, version, actor, time, and canonical SHA-256 payload hash.
 - Stable idempotency keys prevent duplicate RFQs, POs, and change orders.
-- A durable journal commits `PENDING` before and `SUCCEEDED` after external commands.
+- Approved POs, outbound EDI, and supplier-transaction intent are committed before external
+  commands; a durable journal commits `PENDING` before and `SUCCEEDED` after each command.
+- Accepted supplier transaction IDs and polling destinations survive restart. The Procurement
+  Agent periodically reconciles `SUBMITTING`/`PROCESSING` rows, reuses the idempotency journal, and
+  forwards stable-ID 855/865 results without duplicating the supplier submission.
+- Raw and parsed 850/855/860/865 documents, acknowledgment lines, discrepancies, change orders,
+  message delivery status, workflow transitions, and human approvals are persisted as evidence.
 - Retries are bounded and limited to safe/idempotent calls; sourcing can continue at its quote
   threshold and never invents a plan.
 - Duplicate/stale acknowledgments quarantine; invalid EDI becomes recoverable workflow state.

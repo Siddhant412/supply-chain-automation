@@ -1,6 +1,6 @@
 from hashlib import sha256
 from typing import Protocol
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from supplymesh.domain.procurement import (
     ApprovalRecord,
@@ -46,6 +46,7 @@ async def execute_purchase_order(
     journal: SideEffectJournal,
     *,
     correlation_id: str,
+    submission_message_id: UUID | None = None,
 ) -> SupplierTransactionAccepted:
     verify_approval(
         approval,
@@ -60,7 +61,7 @@ async def execute_purchase_order(
         return SupplierTransactionAccepted.model_validate(existing)
     x12 = generate_850(po, control_number(key))
     submission = PurchaseOrderSubmission(
-        message_id=uuid4(),
+        message_id=submission_message_id or uuid4(),
         po_number=po.po_number,
         po_version=po.version,
         x12=x12,

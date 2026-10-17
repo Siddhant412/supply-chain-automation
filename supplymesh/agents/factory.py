@@ -16,6 +16,7 @@ from supplymesh.agents.orchestrator import build_orchestrator_agent
 from supplymesh.agents.procurement import ProcurementAgentService, build_procurement_protocol
 from supplymesh.agents.sourcing import LiveFxResolver, SourcingAgentService, build_sourcing_protocol
 from supplymesh.clients.supplier_client import SupplierClient
+from supplymesh.persistence.audit_repository import AuditRepository
 from supplymesh.persistence.database import get_engine
 from supplymesh.persistence.fx_repository import SqlAlchemyFxRepository
 from supplymesh.persistence.planning_repository import PlanningRequestRepository
@@ -133,7 +134,8 @@ def build_company_agents(
                 procurement_repository,
                 poll_interval_seconds=ack_poll_interval_seconds,
                 poll_timeout_seconds=ack_poll_timeout_seconds,
-            )
+            ),
+            recovery_interval_seconds=ack_poll_interval_seconds,
         ),
         publish_manifest=publish_manifests,
     )
@@ -145,17 +147,21 @@ def build_company_agents(
         mailbox=mailbox,
     )
     acknowledgment.include(
-        build_acknowledgment_protocol(AcknowledgmentAgentService(procurement_repository)),
+        build_acknowledgment_protocol(
+            AcknowledgmentAgentService(procurement_repository, procurement_repository)
+        ),
         publish_manifest=publish_manifests,
     )
+    audit_repository = AuditRepository(_session_factory)
     coordinator = OrchestrationCoordinator(
         inventory_address=inventory.address,
         requests=PlanningRequestRepository(_session_factory),
-        workflows=WorkflowRepository(_session_factory),
+        workflows=WorkflowRepository(_session_factory, audit_repository),
         sourcing_address=sourcing.address,
         procurement_address=procurement.address,
         acknowledgment_address=acknowledgment.address,
         transition_graph=build_event_transition_graph(),
+        audit=audit_repository,
     )
     orchestrator = build_orchestrator_agent(
         seed=seeds.orchestrator,
