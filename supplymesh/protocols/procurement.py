@@ -17,6 +17,7 @@ class PurchaseOrderExecutionRequest(MessageEnvelope):
     message_type: Literal["PurchaseOrderExecutionRequest"] = "PurchaseOrderExecutionRequest"
     purchase_orders: tuple[PurchaseOrder, ...]
     approval_id: str
+    approval_ids: tuple[str, ...] = ()
 
 
 class PurchaseOrderSubmitted(MessageEnvelope):

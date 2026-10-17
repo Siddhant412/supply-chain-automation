@@ -151,8 +151,10 @@ and conflicting acknowledgments, duplicate external calls, partial suppliers, al
 failure, stale approvals, FX fallback, controlled recovery, and PostgreSQL checkpoint resumption.
 The Fetch connectivity integration test additionally drives a demand-card reply through registered
 Orchestrator and Inventory uAgent protocol handlers, verifies wire serialization/correlation, and
-asserts the returned assessment card against protected inventory. CI repeats formatting, linting,
-strict agent/domain/persistence/protocol/service typing, tests, migrations, and drift checks.
+asserts the returned assessment card against protected inventory. Specialist integration tests
+exercise typed sourcing, plan, PO, acknowledgment, counterproposal, change-response, status, and
+bounded-failure messages. CI repeats formatting, linting, strict
+agent/domain/persistence/protocol/service typing, tests, migrations, and drift checks.
 
 ## Supplier API and demo scenarios
 
@@ -181,7 +183,9 @@ metadata with a text fallback. Card payloads are strict, versioned, and limited 
 local card builders cover intake, plans, approval, exceptions, completion, and agent activity. The
 implemented connectivity slice accepts the structured demand-card reply, persists its workflow and
 demand, exchanges a typed request/result with the Inventory Agent, and returns the correlated
-inventory card. Sourcing and later stages are not yet connected to the live chat transport.
+inventory card. All other specialists now publish typed transport handlers backed by the real REST,
+FX, approval, idempotency-journal, EDI, polling, and comparison services. Orchestrator routing from
+the inventory result through those later stages is the next implementation step.
 
 Live deployment checklist:
 

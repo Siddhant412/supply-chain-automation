@@ -320,7 +320,7 @@ def repository_session_factory() -> tuple[Any, Any]:
 
 
 def test_planning_and_workflow_repositories_persist_before_transport() -> None:
-    _, sessions = repository_session_factory()
+    engine, sessions = repository_session_factory()
     product_id = uuid4()
     bom_id = uuid4()
     existing_demand_id = uuid4()
@@ -443,3 +443,4 @@ def test_planning_and_workflow_repositories_persist_before_transport() -> None:
         assert workflow is not None
         assert workflow.status == "SOURCING"
         assert workflow.checkpoint_version == 2
+    engine.dispose()

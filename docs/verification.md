@@ -9,8 +9,8 @@ means the cited automated test or reproducible command passed; unchecked items a
 
 - [x] Ruff formatting and linting: `uv run ruff format --check . && uv run ruff check .`
 - [x] Strict typing for agent/domain/persistence/protocol/service packages: `uv run mypy`
-- [x] Automated suite: `uv run pytest -q`
-- [x] Deterministic domain/service/EDI coverage: 94% (`pytest-cov`).
+- [x] Automated suite: 54 passed with `uv run pytest -q`.
+- [x] Full `supplymesh` plus `apps` source coverage: 88% (`pytest-cov`).
 - [x] PostgreSQL migrations `0001`–`0005` apply to a clean PostgreSQL 17 database.
 - [x] Alembic reports no SupplyMesh schema drift after LangGraph checkpoint setup.
 - [x] PostgreSQL checkpoint restart: pause, close graph/saver, reopen/resume twice, complete.
@@ -45,11 +45,15 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [x] The Fetch.ai connectivity vertical slice sends a Pydantic-2-validated planning contract over
   uAgents wire models, protects existing reservations, rejects envelope tampering, and deduplicates
   repeated demand-card message IDs.
+- [x] Inventory, sourcing, procurement, and acknowledgment specialists publish real typed uAgent
+  handlers. Focused integration tests cover quotes/plans, approval-gated 850/855, approved 860/865,
+  exact acknowledgment comparison, malformed EDI, correlation, and bounded failures.
 - [ ] Orchestrator ACP handler drives the complete LangGraph workflow; the current handler proves
   the official chat manifest plus the persisted inventory slice, while later workflow stages still
   use direct domain adapters in local e2e tests.
 - [ ] Orchestrator and all specialists exchange the typed contracts over uAgents transport; five
-  stable identities exist, but specialist transport handlers are not yet wired.
+  stable identities and all specialist handlers exist, but Orchestrator routing beyond Inventory is
+  not yet connected into one conversation/workflow.
 - [ ] All five agents registered with stable Agentverse profile URLs.
 - [ ] Orchestrator discoverable and directly usable through ASI:One.
 - [ ] Direct mention and planner-routed invocation verified live.
@@ -57,10 +61,10 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [ ] Complete primary workflow demonstrated in one ASI:One conversation.
 - [ ] Shared ASI:One conversation URL available.
 
-Implementation gap: sourcing, procurement, acknowledgment, and exception contracts are not yet
-wired through uAgents transport or the ACP conversation loop. External blocker: live Agentverse and
-ASI:One checks require credentials, deployed HTTPS endpoints, and human interaction in those
-products. No credentials or URLs were present in the workspace.
+Implementation gap: the Orchestrator must route the implemented sourcing, procurement, and
+acknowledgment transports through LangGraph and the ACP conversation loop. External blocker: live
+Agentverse and ASI:One checks require credentials, deployed HTTPS endpoints, and human interaction
+in those products. No credentials or URLs were present in the workspace.
 
 ## Reliability and submission
 

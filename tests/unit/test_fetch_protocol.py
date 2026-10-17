@@ -3,7 +3,14 @@ from uagents_core.contrib.protocols.chat import ChatMessage, chat_protocol_spec
 
 from supplymesh.agents.factory import AgentSeeds, build_company_agents
 from supplymesh.agents.orchestrator import build_chat_protocol, build_orchestrator_agent
-from supplymesh.agents.transport import DemandPlanningTransport, InventoryShortageTransport
+from supplymesh.agents.transport import (
+    AcknowledgmentReceivedTransport,
+    CounterproposalExecutionTransport,
+    DemandPlanningTransport,
+    InventoryShortageTransport,
+    PurchaseOrderExecutionTransport,
+    SourcingRequestTransport,
+)
 
 
 def test_official_chat_protocol_version_and_manifest() -> None:
@@ -33,7 +40,7 @@ def test_company_agents_publish_the_connectivity_slice_protocols() -> None:
         ),
         publish_manifests=False,
     )
-    orchestrator, inventory, *_ = agents
+    orchestrator, inventory, sourcing, procurement, acknowledgment = agents
     assert orchestrator.get_message_protocol(Model.build_schema_digest(ChatMessage)) is not None
     assert (
         orchestrator.get_message_protocol(Model.build_schema_digest(InventoryShortageTransport))
@@ -41,5 +48,25 @@ def test_company_agents_publish_the_connectivity_slice_protocols() -> None:
     )
     assert (
         inventory.get_message_protocol(Model.build_schema_digest(DemandPlanningTransport))
+        is not None
+    )
+    assert (
+        sourcing.get_message_protocol(Model.build_schema_digest(SourcingRequestTransport))
+        is not None
+    )
+    assert (
+        procurement.get_message_protocol(Model.build_schema_digest(PurchaseOrderExecutionTransport))
+        is not None
+    )
+    assert (
+        procurement.get_message_protocol(
+            Model.build_schema_digest(CounterproposalExecutionTransport)
+        )
+        is not None
+    )
+    assert (
+        acknowledgment.get_message_protocol(
+            Model.build_schema_digest(AcknowledgmentReceivedTransport)
+        )
         is not None
     )

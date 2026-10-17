@@ -18,8 +18,10 @@ identity fields and the canonical Pydantic 2 JSON payload. Receivers immediately
 strictly validate the payload, then verify that its envelope fields exactly match the outer wire
 fields before invoking a domain service.
 
-The initial types are `DemandPlanningTransport`, `InventoryShortageTransport`, and a bounded
-`PlanningFailureTransport`. Protocol handlers never calculate inventory values themselves.
+The boundary now covers inventory planning, sourcing and plans, purchase-order execution,
+acknowledgments, counterproposals, change responses, workflow status, and bounded specialist
+failures. Protocol handlers never calculate inventory, money, optimization, or discrepancy values
+themselves.
 
 ## Consequences
 

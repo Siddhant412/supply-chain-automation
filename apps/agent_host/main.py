@@ -28,6 +28,18 @@ def main() -> None:
         AgentSeeds(*values),
         publish_agent_details=settings.publish_agent_details,
         mailbox=settings.agent_mailbox,
+        supplier_base_url=settings.supplier_simulator_base_url,
+        supplier_api_key=(
+            settings.supplier_api_key.get_secret_value() if settings.supplier_api_key else ""
+        ),
+        http_connect_timeout_seconds=settings.http_connect_timeout_seconds,
+        http_read_timeout_seconds=settings.http_read_timeout_seconds,
+        http_max_retries=settings.http_max_retries,
+        minimum_valid_quotes=settings.min_valid_quotes,
+        fx_provider_url=settings.fx_provider_url,
+        fx_cache_ttl_seconds=settings.fx_cache_ttl_seconds,
+        ack_poll_interval_seconds=settings.ack_poll_interval_seconds,
+        ack_poll_timeout_seconds=settings.ack_poll_timeout_seconds,
     )
     Bureau(agents=list(agents), port=settings.agent_host_port, network="testnet").run()
 
