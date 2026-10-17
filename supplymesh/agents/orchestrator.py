@@ -44,6 +44,34 @@ def build_chat_protocol(coordinator: FetchConnectivityCoordinator | None = None)
         if (
             coordinator is not None
             and selection is not None
+            and selection.action != "submit_demand"
+            and hasattr(coordinator, "handle_selection")
+        ):
+            try:
+                handled = await coordinator.handle_selection(
+                    ctx, conversation_id=sender, selection=selection
+                )
+                if handled:
+                    return
+            except (ValidationError, ValueError) as exc:
+                await ctx.send(
+                    sender,
+                    _chat_message(f"I could not apply that workflow decision: {exc}"),
+                )
+                return
+            except Exception:
+                ctx.logger.exception("failed to apply workflow decision")
+                await ctx.send(
+                    sender,
+                    _chat_message(
+                        "I could not apply that workflow decision safely. Please retry or ask an "
+                        "operator for help."
+                    ),
+                )
+                return
+        if (
+            coordinator is not None
+            and selection is not None
             and selection.action == "submit_demand"
         ):
             try:

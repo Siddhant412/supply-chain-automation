@@ -52,3 +52,77 @@ def counterproposal_form(*, po_id: str, po_version: int) -> CardEnvelope:
             },
         },
     )
+
+
+def purchase_order_batch_review(
+    purchase_orders: tuple[PurchaseOrder, ...], *, batch_id: str, batch_version: int
+) -> CardEnvelope:
+    return render_card(
+        "review",
+        {
+            "title": "Approve and send purchase orders",
+            "target": {"id": batch_id, "version": batch_version},
+            "purchase_orders": [
+                {
+                    "po_id": str(po.po_id),
+                    "po_number": po.po_number,
+                    "supplier_id": po.supplier_id,
+                    "currency": po.currency,
+                    "total": str(po.total),
+                    "lines": [line.model_dump(mode="json") for line in po.lines],
+                }
+                for po in purchase_orders
+            ],
+            "actions": [
+                {
+                    "label": "Approve and send",
+                    "style": "primary",
+                    "value": {
+                        "action": "approve_and_send_purchase_orders",
+                        "target_id": batch_id,
+                        "target_version": batch_version,
+                    },
+                },
+                {
+                    "label": "Cancel",
+                    "value": {
+                        "action": "cancel",
+                        "target_id": batch_id,
+                        "target_version": batch_version,
+                    },
+                },
+            ],
+        },
+    )
+
+
+def counterproposal_approval_review(
+    *, po_id: str, po_version: int, values: dict[str, object]
+) -> CardEnvelope:
+    return render_card(
+        "review",
+        {
+            "title": "Approve supplier counterproposal",
+            "target": {"id": po_id, "version": po_version},
+            "proposed_changes": values,
+            "actions": [
+                {
+                    "label": "Approve and send",
+                    "style": "primary",
+                    "value": {
+                        "action": "approve_counterproposal",
+                        "target_id": po_id,
+                        "target_version": po_version,
+                    },
+                },
+                {
+                    "label": "Cancel",
+                    "value": {
+                        "action": "cancel",
+                        "target_id": po_id,
+                        "target_version": po_version,
+                    },
+                },
+            ],
+        },
+    )

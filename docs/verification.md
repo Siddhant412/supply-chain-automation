@@ -8,9 +8,10 @@ means the cited automated test or reproducible command passed; unchecked items a
 ## Executed locally
 
 - [x] Ruff formatting and linting: `uv run ruff format --check . && uv run ruff check .`
-- [x] Strict typing for agent/domain/persistence/protocol/service packages: `uv run mypy`
-- [x] Automated suite: 54 passed with `uv run pytest -q`.
-- [x] Full `supplymesh` plus `apps` source coverage: 88% (`pytest-cov`).
+- [x] Strict typing for 43 agent/domain/persistence/protocol/service source files:
+  `uv run --python 3.11 --isolated mypy`.
+- [x] Automated suite: 59 passed with `uv run pytest -q`.
+- [x] Full `supplymesh` plus `apps` source coverage: 87% (`pytest-cov`).
 - [x] PostgreSQL migrations `0001`–`0005` apply to a clean PostgreSQL 17 database.
 - [x] Alembic reports no SupplyMesh schema drift after LangGraph checkpoint setup.
 - [x] PostgreSQL checkpoint restart: pause, close graph/saver, reopen/resume twice, complete.
@@ -48,12 +49,11 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [x] Inventory, sourcing, procurement, and acknowledgment specialists publish real typed uAgent
   handlers. Focused integration tests cover quotes/plans, approval-gated 850/855, approved 860/865,
   exact acknowledgment comparison, malformed EDI, correlation, and bounded failures.
-- [ ] Orchestrator ACP handler drives the complete LangGraph workflow; the current handler proves
-  the official chat manifest plus the persisted inventory slice, while later workflow stages still
-  use direct domain adapters in local e2e tests.
-- [ ] Orchestrator and all specialists exchange the typed contracts over uAgents transport; five
-  stable identities and all specialist handlers exist, but Orchestrator routing beyond Inventory is
-  not yet connected into one conversation/workflow.
+- [x] Orchestrator ACP card handlers drive Inventory, Sourcing, separate plan/PO approvals,
+  Procurement, Acknowledgment, exact completion, exception review, and the approved 860/865 loop;
+  every callback is checked by the LangGraph event-transition reducer.
+- [x] Orchestrator and all specialists exchange typed uAgents contracts in handler-level integration
+  tests with end-to-end correlation/reply validation and duplicate inbound suppression.
 - [ ] All five agents registered with stable Agentverse profile URLs.
 - [ ] Orchestrator discoverable and directly usable through ASI:One.
 - [ ] Direct mention and planner-routed invocation verified live.
@@ -61,10 +61,8 @@ means the cited automated test or reproducible command passed; unchecked items a
 - [ ] Complete primary workflow demonstrated in one ASI:One conversation.
 - [ ] Shared ASI:One conversation URL available.
 
-Implementation gap: the Orchestrator must route the implemented sourcing, procurement, and
-acknowledgment transports through LangGraph and the ACP conversation loop. External blocker: live
-Agentverse and ASI:One checks require credentials, deployed HTTPS endpoints, and human interaction
-in those products. No credentials or URLs were present in the workspace.
+External blocker: live Agentverse and ASI:One checks require credentials, deployed HTTPS endpoints,
+and human interaction in those products. No credentials or URLs were present in the workspace.
 
 ## Reliability and submission
 

@@ -85,6 +85,7 @@ class FetchConnectivityCoordinator:
                 request_message_id=request.message_id,
                 chat_message_id=chat_message_id,
                 status="INVENTORY_PLANNING",
+                currency=intake.currency,
             )
         )
         delivery = await ctx.send(

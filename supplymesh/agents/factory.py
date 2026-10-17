@@ -7,8 +7,11 @@ from supplymesh.agents.acknowledgment import (
     AcknowledgmentAgentService,
     build_acknowledgment_protocol,
 )
-from supplymesh.agents.connectivity import FetchConnectivityCoordinator
 from supplymesh.agents.inventory import build_inventory_protocol
+from supplymesh.agents.orchestration import (
+    OrchestrationCoordinator,
+    build_specialist_response_protocol,
+)
 from supplymesh.agents.orchestrator import build_orchestrator_agent
 from supplymesh.agents.procurement import ProcurementAgentService, build_procurement_protocol
 from supplymesh.agents.sourcing import LiveFxResolver, SourcingAgentService, build_sourcing_protocol
@@ -20,6 +23,7 @@ from supplymesh.persistence.procurement_repository import ProcurementRepository
 from supplymesh.persistence.side_effect_journal import SqlAlchemySideEffectJournal
 from supplymesh.persistence.workflow_repository import WorkflowRepository
 from supplymesh.services.fx_service import FrankfurterFxProvider
+from supplymesh.workflows.procurement_graph import build_event_transition_graph
 
 
 @dataclass(frozen=True)
@@ -144,20 +148,29 @@ def build_company_agents(
         build_acknowledgment_protocol(AcknowledgmentAgentService(procurement_repository)),
         publish_manifest=publish_manifests,
     )
-    coordinator = FetchConnectivityCoordinator(
+    coordinator = OrchestrationCoordinator(
         inventory_address=inventory.address,
         requests=PlanningRequestRepository(_session_factory),
         workflows=WorkflowRepository(_session_factory),
+        sourcing_address=sourcing.address,
+        procurement_address=procurement.address,
+        acknowledgment_address=acknowledgment.address,
+        transition_graph=build_event_transition_graph(),
+    )
+    orchestrator = build_orchestrator_agent(
+        seed=seeds.orchestrator,
+        port=None,
+        mailbox=mailbox,
+        publish_agent_details=publish_agent_details,
+        coordinator=coordinator,
+        publish_manifests=publish_manifests,
+    )
+    orchestrator.include(
+        build_specialist_response_protocol(coordinator),
+        publish_manifest=publish_manifests,
     )
     return (
-        build_orchestrator_agent(
-            seed=seeds.orchestrator,
-            port=None,
-            mailbox=mailbox,
-            publish_agent_details=publish_agent_details,
-            coordinator=coordinator,
-            publish_manifests=publish_manifests,
-        ),
+        orchestrator,
         inventory,
         sourcing,
         procurement,

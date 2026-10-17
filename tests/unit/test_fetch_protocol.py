@@ -4,11 +4,15 @@ from uagents_core.contrib.protocols.chat import ChatMessage, chat_protocol_spec
 from supplymesh.agents.factory import AgentSeeds, build_company_agents
 from supplymesh.agents.orchestrator import build_chat_protocol, build_orchestrator_agent
 from supplymesh.agents.transport import (
+    AcknowledgmentComparisonTransport,
     AcknowledgmentReceivedTransport,
+    ChangeResponseReceivedTransport,
     CounterproposalExecutionTransport,
     DemandPlanningTransport,
     InventoryShortageTransport,
+    ProcurementPlansReadyTransport,
     PurchaseOrderExecutionTransport,
+    PurchaseOrderSubmittedTransport,
     SourcingRequestTransport,
 )
 
@@ -46,6 +50,16 @@ def test_company_agents_publish_the_connectivity_slice_protocols() -> None:
         orchestrator.get_message_protocol(Model.build_schema_digest(InventoryShortageTransport))
         is not None
     )
+    for response_type in (
+        ProcurementPlansReadyTransport,
+        PurchaseOrderSubmittedTransport,
+        AcknowledgmentReceivedTransport,
+        AcknowledgmentComparisonTransport,
+        ChangeResponseReceivedTransport,
+    ):
+        assert (
+            orchestrator.get_message_protocol(Model.build_schema_digest(response_type)) is not None
+        )
     assert (
         inventory.get_message_protocol(Model.build_schema_digest(DemandPlanningTransport))
         is not None

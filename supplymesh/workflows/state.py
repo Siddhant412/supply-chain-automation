@@ -26,3 +26,4 @@ class ProcurementWorkflowState(TypedDict, total=False):
     status: str
     error: dict[str, Any] | None
     decision: str | None
+    event: dict[str, Any]

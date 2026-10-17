@@ -5,6 +5,92 @@ from langgraph.types import interrupt
 
 from supplymesh.workflows.state import ProcurementWorkflowState
 
+_EVENT_TRANSITIONS: dict[str, tuple[frozenset[str], str]] = {
+    "inventory_shortage": (frozenset({"INVENTORY_PLANNING"}), "SOURCING"),
+    "inventory_sufficient": (frozenset({"INVENTORY_PLANNING"}), "COMPLETED"),
+    "plans_ready": (frozenset({"SOURCING"}), "WAITING_FOR_PLAN_APPROVAL"),
+    "plan_approved": (
+        frozenset({"WAITING_FOR_PLAN_APPROVAL"}),
+        "WAITING_FOR_PO_APPROVAL",
+    ),
+    "plan_rejected": (frozenset({"WAITING_FOR_PLAN_APPROVAL"}), "CANCELLED"),
+    "purchase_orders_approved": (
+        frozenset({"WAITING_FOR_PO_APPROVAL"}),
+        "PO_EXECUTION",
+    ),
+    "purchase_orders_cancelled": (frozenset({"WAITING_FOR_PO_APPROVAL"}), "CANCELLED"),
+    "purchase_orders_submitted": (
+        frozenset({"PO_EXECUTION", "WAITING_FOR_SUPPLIER_ACK"}),
+        "WAITING_FOR_SUPPLIER_ACK",
+    ),
+    "acknowledgments_matched": (
+        frozenset({"WAITING_FOR_SUPPLIER_ACK"}),
+        "COMPLETED",
+    ),
+    "acknowledgments_conflicted": (
+        frozenset({"WAITING_FOR_SUPPLIER_ACK"}),
+        "WAITING_FOR_EXCEPTION_DECISION",
+    ),
+    "exception_accepted": (
+        frozenset({"WAITING_FOR_EXCEPTION_DECISION"}),
+        "COMPLETED",
+    ),
+    "exception_cancelled": (
+        frozenset({"WAITING_FOR_EXCEPTION_DECISION"}),
+        "CANCELLED",
+    ),
+    "counterproposal_prepared": (
+        frozenset({"WAITING_FOR_EXCEPTION_DECISION"}),
+        "WAITING_FOR_COUNTERPROPOSAL_APPROVAL",
+    ),
+    "counterproposal_approved": (
+        frozenset({"WAITING_FOR_COUNTERPROPOSAL_APPROVAL"}),
+        "COUNTERPROPOSAL",
+    ),
+    "counterproposal_cancelled": (
+        frozenset({"WAITING_FOR_COUNTERPROPOSAL_APPROVAL"}),
+        "CANCELLED",
+    ),
+    "counterproposal_submitted": (
+        frozenset({"COUNTERPROPOSAL", "WAITING_FOR_CHANGE_RESPONSE"}),
+        "WAITING_FOR_CHANGE_RESPONSE",
+    ),
+    "change_accepted": (frozenset({"WAITING_FOR_CHANGE_RESPONSE"}), "COMPLETED"),
+    "change_rejected": (
+        frozenset({"WAITING_FOR_CHANGE_RESPONSE"}),
+        "WAITING_FOR_EXCEPTION_DECISION",
+    ),
+    "resourcing_requested": (
+        frozenset({"WAITING_FOR_EXCEPTION_DECISION"}),
+        "SOURCING",
+    ),
+}
+
+
+def apply_workflow_event(state: ProcurementWorkflowState) -> ProcurementWorkflowState:
+    """Apply one externally observed event through a strict deterministic transition."""
+    event = state.get("event")
+    if not event or not isinstance(event.get("kind"), str):
+        raise ValueError("workflow event kind is required")
+    kind = event["kind"]
+    transition = _EVENT_TRANSITIONS.get(kind)
+    if transition is None:
+        raise ValueError(f"unsupported workflow event: {kind}")
+    allowed, next_status = transition
+    current = state.get("status")
+    if current not in allowed:
+        raise ValueError(f"workflow event {kind} is invalid while status is {current}")
+    return {"status": next_status, "event": {}}
+
+
+def build_event_transition_graph() -> Any:
+    """Build the LangGraph used by transport callbacks to advance durable workflow state."""
+    graph = StateGraph(ProcurementWorkflowState)
+    graph.add_node("apply_event", apply_workflow_event)
+    graph.add_edge(START, "apply_event")
+    graph.add_edge("apply_event", END)
+    return graph.compile()
+
 
 def _status(value: str) -> ProcurementWorkflowState:
     return {"status": value}

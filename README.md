@@ -149,11 +149,12 @@ DATABASE_URL=postgresql+psycopg://... uv run alembic check
 The suite contains unit, supplier-contract, workflow, and local end-to-end tests. It covers exact
 and conflicting acknowledgments, duplicate external calls, partial suppliers, all-supplier
 failure, stale approvals, FX fallback, controlled recovery, and PostgreSQL checkpoint resumption.
-The Fetch connectivity integration test additionally drives a demand-card reply through registered
-Orchestrator and Inventory uAgent protocol handlers, verifies wire serialization/correlation, and
-asserts the returned assessment card against protected inventory. Specialist integration tests
-exercise typed sourcing, plan, PO, acknowledgment, counterproposal, change-response, status, and
-bounded-failure messages. CI repeats formatting, linting, strict
+The Fetch integration tests drive the card conversation through registered protocol handlers from
+demand intake to Inventory, Sourcing, Procurement, Acknowledgment, and final completion. They
+verify strict wire serialization/correlation, durable message deduplication, separate plan/PO/change
+approvals, persisted outbound delivery state, exact acknowledgments, and the 860/865 counterproposal
+loop. Specialist integration tests also exercise bounded failures independently. CI repeats
+formatting, linting, strict
 agent/domain/persistence/protocol/service typing, tests, migrations, and drift checks.
 
 ## Supplier API and demo scenarios
@@ -181,11 +182,14 @@ Admin routes return 404 in production mode.
 The Orchestrator publishes the official Agent Chat Protocol manifest and emits Interactive Card
 metadata with a text fallback. Card payloads are strict, versioned, and limited to 64 KB. Current
 local card builders cover intake, plans, approval, exceptions, completion, and agent activity. The
-implemented connectivity slice accepts the structured demand-card reply, persists its workflow and
-demand, exchanges a typed request/result with the Inventory Agent, and returns the correlated
-inventory card. All other specialists now publish typed transport handlers backed by the real REST,
-FX, approval, idempotency-journal, EDI, polling, and comparison services. Orchestrator routing from
-the inventory result through those later stages is the next implementation step.
+structured card loop now persists the workflow and demand, routes typed messages through all four
+specialists, and applies every transport callback through a strict LangGraph transition reducer.
+Human plan selection, PO approval, exception decisions, and counterproposal approval are validated
+against the current persisted target/version. Outbound specialist messages are recorded before
+delivery and updated afterward; duplicate inbound message IDs are ignored. Exact 855 results
+complete the conversation, while conflicts expose accept, counter, switch/re-source,
+split/re-source, or cancel actions. The counter path routes the 860/865 exchange back through the
+Acknowledgment Agent. Live Agentverse/ASI:One rendering remains a deployment verification item.
 
 Live deployment checklist:
 
